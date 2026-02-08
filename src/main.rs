@@ -185,6 +185,9 @@ enum DmAction {
         npub: String,
         /// Message to send
         message: String,
+        /// Use NIP-04 (kind:4) instead of NIP-17
+        #[arg(long)]
+        nip04: bool,
     },
     /// Read received direct messages
     Read {
@@ -310,8 +313,8 @@ async fn main() -> anyhow::Result<()> {
             commands::react::run(&note_id, &emoji).await?
         }
         Commands::Dm { action } => match action {
-            DmAction::Send { npub, message } => {
-                commands::dm::send(&npub, &message).await?
+            DmAction::Send { npub, message, nip04 } => {
+                commands::dm::send(&npub, &message, nip04).await?
             }
             DmAction::Read { npub } => commands::dm::read(npub.as_deref()).await?,
         },

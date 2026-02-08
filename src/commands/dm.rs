@@ -6,15 +6,20 @@ use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
 
-pub async fn send(npub_str: &str, message: &str) -> Result<()> {
+pub async fn send(npub_str: &str, message: &str, use_nip04: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
     let receiver = PublicKey::parse(npub_str)?;
 
-    println!("Sending DM...");
-    client::send_dm(&nostr_client, receiver, message).await?;
+    if use_nip04 {
+        println!("Sending DM (NIP-04)...");
+        client::send_dm_nip04(&nostr_client, &keys, receiver, message).await?;
+    } else {
+        println!("Sending DM (NIP-17)...");
+        client::send_dm(&nostr_client, receiver, message).await?;
+    }
 
     let npub = receiver.to_bech32()?;
     println!("DM sent to {}!", &npub[..12.min(npub.len())]);

@@ -143,6 +143,16 @@ pub async fn send_dm(client: &Client, receiver: PublicKey, message: &str) -> Res
     Ok(())
 }
 
+pub async fn send_dm_nip04(client: &Client, keys: &Keys, receiver: PublicKey, message: &str) -> Result<()> {
+    use nostr_sdk::nips::nip04;
+
+    let encrypted = nip04::encrypt(keys.secret_key(), &receiver, message)?;
+    let tags = vec![Tag::public_key(receiver)];
+    let builder = EventBuilder::new(Kind::EncryptedDirectMessage, encrypted).tags(tags);
+    client.send_event_builder(builder).await?;
+    Ok(())
+}
+
 pub async fn fetch_gift_wraps(client: &Client, pubkey: &PublicKey, limit: usize) -> Result<Vec<Event>> {
     let filter = Filter::new()
         .kind(Kind::GiftWrap)
