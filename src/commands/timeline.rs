@@ -94,7 +94,7 @@ pub async fn run(limit: usize) -> Result<()> {
         let note_id = event.id.to_bech32()?;
         println!("[{}]{} {}", short_npub, label, datetime);
         println!("{}", event.content);
-        println!("  id: {}", &note_id[..20]);
+        println!("  id: {}", note_id);
         println!("{}", "-".repeat(60));
     }
 

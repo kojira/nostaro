@@ -10,7 +10,8 @@ pub async fn run(note_id: &str, message: &str) -> Result<()> {
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    let event_id = EventId::parse(note_id)?;
+    let event_id = EventId::parse(note_id)
+        .or_else(|_| EventId::from_bech32(note_id))?;
 
     let target_event = client::fetch_event_by_id(&nostr_client, &event_id)
         .await?
