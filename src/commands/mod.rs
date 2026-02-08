@@ -1,7 +1,15 @@
+pub mod cache;
+pub mod channel;
+pub mod dm;
 pub mod follow;
 pub mod init;
 pub mod post;
 pub mod profile;
 pub mod react;
 pub mod relay;
+pub mod reply;
+pub mod repost;
+pub mod search;
 pub mod timeline;
+pub mod upload;
+pub mod zap;

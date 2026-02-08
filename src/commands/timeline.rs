@@ -3,6 +3,7 @@ use chrono::{DateTime, Utc};
 use nostr_sdk::prelude::*;
 use std::collections::HashSet;
 
+use crate::cache::CacheDb;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
@@ -14,24 +15,20 @@ pub async fn run(limit: usize) -> Result<()> {
 
     println!("Fetching timeline...\n");
 
-    // Get follow list for prioritization
     let contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
     let following_set: HashSet<PublicKey> = contacts.iter().copied().collect();
 
-    // Include self in the "followed" set
     let mut authors = contacts.clone();
     authors.push(keys.public_key());
 
     let mut all_events = Vec::new();
 
-    // Fetch notes from followed users
     if !authors.is_empty() {
         let followed_events =
             client::fetch_timeline_for_authors(&nostr_client, &authors, limit).await?;
         all_events.extend(followed_events);
     }
 
-    // If we don't have enough from followed users, fetch global
     if all_events.len() < limit {
         let global_events = client::fetch_timeline(&nostr_client, limit).await?;
         let seen: HashSet<EventId> = all_events.iter().map(|e| e.id).collect();
@@ -42,7 +39,6 @@ pub async fn run(limit: usize) -> Result<()> {
         }
     }
 
-    // Sort: followed users first, then by timestamp
     all_events.sort_by(|a, b| {
         let a_following = following_set.contains(&a.pubkey) || a.pubkey == keys.public_key();
         let b_following = following_set.contains(&b.pubkey) || b.pubkey == keys.public_key();
@@ -54,6 +50,22 @@ pub async fn run(limit: usize) -> Result<()> {
     });
 
     all_events.truncate(limit);
+
+    // Cache events
+    if let Ok(cache) = CacheDb::open() {
+        for event in &all_events {
+            let tags_json = serde_json::to_string(&event.tags).unwrap_or_default();
+            let _ = cache.store_event(
+                &event.id.to_hex(),
+                &event.pubkey.to_hex(),
+                event.kind.as_u16(),
+                &event.content,
+                event.created_at.as_u64() as i64,
+                &tags_json,
+                &event.as_json(),
+            );
+        }
+    }
 
     if all_events.is_empty() {
         println!("No notes found.");
@@ -79,8 +91,10 @@ pub async fn run(limit: usize) -> Result<()> {
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
             .unwrap_or_else(|| "unknown".to_string());
 
+        let note_id = event.id.to_bech32()?;
         println!("[{}]{} {}", short_npub, label, datetime);
         println!("{}", event.content);
+        println!("  id: {}", &note_id[..20]);
         println!("{}", "-".repeat(60));
     }
 

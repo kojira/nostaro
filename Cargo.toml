@@ -1,15 +1,20 @@
 [package]
 name = "nostaro"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A Nostr CLI tool"
 
 [dependencies]
-nostr-sdk = "0.41"
+nostr-sdk = { version = "0.41", features = ["nip59"] }
 clap = { version = "4", features = ["derive"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 toml = "0.8"
 dirs = "6"
 anyhow = "1"
 chrono = "0.4"
+rusqlite = { version = "0.32", features = ["bundled"] }
+reqwest = { version = "0.12", features = ["json", "multipart"] }
+sha2 = "0.10"
+base64 = "0.22"

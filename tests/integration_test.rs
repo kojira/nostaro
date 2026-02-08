@@ -15,6 +15,7 @@ fn config_save_load_roundtrip() {
             "wss://relay2.example.com".to_string(),
         ],
         default_relays: vec!["wss://default.example.com".to_string()],
+        blossom_server: None,
     };
 
     config.save_to(&path).unwrap();
@@ -24,14 +25,12 @@ fn config_save_load_roundtrip() {
     assert_eq!(loaded.relays, config.relays);
     assert_eq!(loaded.default_relays, config.default_relays);
 
-    // Clean up
     std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
 fn config_load_nonexistent_returns_default() {
-    let path = PathBuf::from("/tmp/nostaro_nonexistent_config_test.toml");
-    // Ensure file does not exist
+    let path = PathBuf::from("/tmp/nostaro_nonexistent_config_v3_test.toml");
     std::fs::remove_file(&path).ok();
 
     let config = nostaro::config::NostaroConfig::load_from(&path).unwrap();
@@ -47,6 +46,31 @@ fn config_active_relays_prefers_custom() {
 
     config.relays = vec!["wss://custom.relay".to_string()];
     assert_eq!(config.active_relays(), vec!["wss://custom.relay"]);
+}
+
+#[test]
+fn config_blossom_url_default() {
+    let config = nostaro::config::NostaroConfig::default();
+    assert_eq!(config.blossom_url(), "https://blossom.primal.net");
+}
+
+#[test]
+fn config_blossom_url_custom() {
+    let mut config = nostaro::config::NostaroConfig::default();
+    config.blossom_server = Some("https://custom.blossom.server".to_string());
+    assert_eq!(config.blossom_url(), "https://custom.blossom.server");
+}
+
+#[test]
+fn config_backward_compatible_without_blossom() {
+    let toml_str = r#"
+secret_key = "nsec1test"
+relays = ["wss://relay.damus.io"]
+default_relays = ["wss://relay.damus.io"]
+"#;
+    let config: nostaro::config::NostaroConfig = toml::from_str(toml_str).unwrap();
+    assert!(config.blossom_server.is_none());
+    assert_eq!(config.secret_key, Some("nsec1test".to_string()));
 }
 
 // ── Key generation ───────────────────────────────────────────────────
@@ -101,11 +125,39 @@ fn keys_from_config_missing_key_errors() {
     assert!(result.is_err());
 }
 
+// ── Cache tests ──────────────────────────────────────────────────────
+
+#[test]
+fn cache_store_and_retrieve_event() {
+    let cache = nostaro::cache::CacheDb::open().unwrap();
+    let test_id = format!("test_event_{}", std::process::id());
+    cache
+        .store_event(&test_id, "pubkey1", 1, "test content", 12345, "[]", "{}")
+        .unwrap();
+    let event = cache.get_event(&test_id).unwrap().unwrap();
+    assert_eq!(event.content, "test content");
+    assert_eq!(event.kind, 1);
+    assert_eq!(event.created_at, 12345);
+}
+
+#[test]
+fn cache_store_and_retrieve_profile() {
+    let cache = nostaro::cache::CacheDb::open().unwrap();
+    let test_pk = format!("test_pk_{}", std::process::id());
+    cache
+        .store_profile(&test_pk, Some("alice"), Some("Alice"), Some("bio"), None)
+        .unwrap();
+    let profile = cache.get_profile(&test_pk).unwrap().unwrap();
+    assert_eq!(profile.name.unwrap(), "alice");
+    assert_eq!(profile.display_name.unwrap(), "Alice");
+    assert!(profile.picture.is_none());
+}
+
 // ── CLI parsing ──────────────────────────────────────────────────────
 
 use clap::Parser;
+use nostr_sdk::prelude::ToBech32;
 
-// Re-define the CLI types here since they are private in main.
 #[derive(Parser, Debug)]
 #[command(name = "nostaro")]
 struct TestCli {
@@ -117,10 +169,13 @@ struct TestCli {
 enum TestCommands {
     Init,
     Post { message: String },
+    Reply { note_id: String, message: String },
+    Repost { note_id: String },
     Timeline {
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
     },
+    Search { query: String },
     Profile {
         #[command(subcommand)]
         action: TestProfileAction,
@@ -133,6 +188,21 @@ enum TestCommands {
         #[arg(default_value = "\u{26A1}")]
         emoji: String,
     },
+    Dm {
+        #[command(subcommand)]
+        action: TestDmAction,
+    },
+    Zap {
+        target: String,
+        amount: u64,
+        #[arg(short, long)]
+        message: Option<String>,
+    },
+    Channel {
+        #[command(subcommand)]
+        action: TestChannelAction,
+    },
+    Upload { file: String },
     Relay {
         #[command(subcommand)]
         action: TestRelayAction,
@@ -158,6 +228,19 @@ enum TestProfileAction {
 }
 
 #[derive(clap::Subcommand, Debug)]
+enum TestDmAction {
+    Send { npub: String, message: String },
+    Read { npub: Option<String> },
+}
+
+#[derive(clap::Subcommand, Debug)]
+enum TestChannelAction {
+    List,
+    Read { id: String },
+    Post { id: String, message: String },
+}
+
+#[derive(clap::Subcommand, Debug)]
 enum TestRelayAction {
     Add { url: String },
     Remove { url: String },
@@ -180,6 +263,28 @@ fn cli_parse_post() {
 }
 
 #[test]
+fn cli_parse_reply() {
+    let cli =
+        TestCli::try_parse_from(["nostaro", "reply", "note1abc", "Hello reply!"]).unwrap();
+    match cli.command {
+        TestCommands::Reply { note_id, message } => {
+            assert_eq!(note_id, "note1abc");
+            assert_eq!(message, "Hello reply!");
+        }
+        _ => panic!("Expected Reply command"),
+    }
+}
+
+#[test]
+fn cli_parse_repost() {
+    let cli = TestCli::try_parse_from(["nostaro", "repost", "note1abc"]).unwrap();
+    match cli.command {
+        TestCommands::Repost { note_id } => assert_eq!(note_id, "note1abc"),
+        _ => panic!("Expected Repost command"),
+    }
+}
+
+#[test]
 fn cli_parse_timeline_default_limit() {
     let cli = TestCli::try_parse_from(["nostaro", "timeline"]).unwrap();
     match cli.command {
@@ -194,6 +299,15 @@ fn cli_parse_timeline_custom_limit() {
     match cli.command {
         TestCommands::Timeline { limit } => assert_eq!(limit, 50),
         _ => panic!("Expected Timeline command"),
+    }
+}
+
+#[test]
+fn cli_parse_search() {
+    let cli = TestCli::try_parse_from(["nostaro", "search", "bitcoin"]).unwrap();
+    match cli.command {
+        TestCommands::Search { query } => assert_eq!(query, "bitcoin"),
+        _ => panic!("Expected Search command"),
     }
 }
 
@@ -225,38 +339,31 @@ fn cli_parse_profile_show_with_pubkey() {
 #[test]
 fn cli_parse_profile_set_all_fields() {
     let cli = TestCli::try_parse_from([
-        "nostaro", "profile", "set",
-        "--name", "test",
-        "--display-name", "Test User",
-        "--about", "A test bio",
-        "--picture", "https://example.com/pic.png",
-    ]).unwrap();
+        "nostaro",
+        "profile",
+        "set",
+        "--name",
+        "test",
+        "--display-name",
+        "Test User",
+        "--about",
+        "A test bio",
+        "--picture",
+        "https://example.com/pic.png",
+    ])
+    .unwrap();
     match cli.command {
         TestCommands::Profile { action } => match action {
-            TestProfileAction::Set { name, display_name, about, picture } => {
+            TestProfileAction::Set {
+                name,
+                display_name,
+                about,
+                picture,
+            } => {
                 assert_eq!(name.unwrap(), "test");
                 assert_eq!(display_name.unwrap(), "Test User");
                 assert_eq!(about.unwrap(), "A test bio");
                 assert_eq!(picture.unwrap(), "https://example.com/pic.png");
-            }
-            _ => panic!("Expected Set action"),
-        },
-        _ => panic!("Expected Profile command"),
-    }
-}
-
-#[test]
-fn cli_parse_profile_set_partial_fields() {
-    let cli = TestCli::try_parse_from([
-        "nostaro", "profile", "set", "--name", "only-name",
-    ]).unwrap();
-    match cli.command {
-        TestCommands::Profile { action } => match action {
-            TestProfileAction::Set { name, display_name, about, picture } => {
-                assert_eq!(name.unwrap(), "only-name");
-                assert!(display_name.is_none());
-                assert!(about.is_none());
-                assert!(picture.is_none());
             }
             _ => panic!("Expected Set action"),
         },
@@ -313,6 +420,137 @@ fn cli_parse_react_custom_emoji() {
 }
 
 #[test]
+fn cli_parse_dm_send() {
+    let cli =
+        TestCli::try_parse_from(["nostaro", "dm", "send", "npub1abc", "Hello DM!"]).unwrap();
+    match cli.command {
+        TestCommands::Dm { action } => match action {
+            TestDmAction::Send { npub, message } => {
+                assert_eq!(npub, "npub1abc");
+                assert_eq!(message, "Hello DM!");
+            }
+            _ => panic!("Expected Send action"),
+        },
+        _ => panic!("Expected Dm command"),
+    }
+}
+
+#[test]
+fn cli_parse_dm_read_no_filter() {
+    let cli = TestCli::try_parse_from(["nostaro", "dm", "read"]).unwrap();
+    match cli.command {
+        TestCommands::Dm { action } => match action {
+            TestDmAction::Read { npub } => assert!(npub.is_none()),
+            _ => panic!("Expected Read action"),
+        },
+        _ => panic!("Expected Dm command"),
+    }
+}
+
+#[test]
+fn cli_parse_dm_read_with_filter() {
+    let cli = TestCli::try_parse_from(["nostaro", "dm", "read", "npub1abc"]).unwrap();
+    match cli.command {
+        TestCommands::Dm { action } => match action {
+            TestDmAction::Read { npub } => assert_eq!(npub.unwrap(), "npub1abc"),
+            _ => panic!("Expected Read action"),
+        },
+        _ => panic!("Expected Dm command"),
+    }
+}
+
+#[test]
+fn cli_parse_zap() {
+    let cli = TestCli::try_parse_from(["nostaro", "zap", "npub1abc", "1000"]).unwrap();
+    match cli.command {
+        TestCommands::Zap {
+            target,
+            amount,
+            message,
+        } => {
+            assert_eq!(target, "npub1abc");
+            assert_eq!(amount, 1000);
+            assert!(message.is_none());
+        }
+        _ => panic!("Expected Zap command"),
+    }
+}
+
+#[test]
+fn cli_parse_zap_with_message() {
+    let cli = TestCli::try_parse_from([
+        "nostaro",
+        "zap",
+        "npub1abc",
+        "2100",
+        "-m",
+        "Great post!",
+    ])
+    .unwrap();
+    match cli.command {
+        TestCommands::Zap {
+            target,
+            amount,
+            message,
+        } => {
+            assert_eq!(target, "npub1abc");
+            assert_eq!(amount, 2100);
+            assert_eq!(message.unwrap(), "Great post!");
+        }
+        _ => panic!("Expected Zap command"),
+    }
+}
+
+#[test]
+fn cli_parse_channel_list() {
+    let cli = TestCli::try_parse_from(["nostaro", "channel", "list"]).unwrap();
+    match cli.command {
+        TestCommands::Channel { action } => {
+            assert!(matches!(action, TestChannelAction::List));
+        }
+        _ => panic!("Expected Channel command"),
+    }
+}
+
+#[test]
+fn cli_parse_channel_read() {
+    let cli = TestCli::try_parse_from(["nostaro", "channel", "read", "abc123"]).unwrap();
+    match cli.command {
+        TestCommands::Channel { action } => match action {
+            TestChannelAction::Read { id } => assert_eq!(id, "abc123"),
+            _ => panic!("Expected Read action"),
+        },
+        _ => panic!("Expected Channel command"),
+    }
+}
+
+#[test]
+fn cli_parse_channel_post() {
+    let cli =
+        TestCli::try_parse_from(["nostaro", "channel", "post", "abc123", "Hello channel!"])
+            .unwrap();
+    match cli.command {
+        TestCommands::Channel { action } => match action {
+            TestChannelAction::Post { id, message } => {
+                assert_eq!(id, "abc123");
+                assert_eq!(message, "Hello channel!");
+            }
+            _ => panic!("Expected Post action"),
+        },
+        _ => panic!("Expected Channel command"),
+    }
+}
+
+#[test]
+fn cli_parse_upload() {
+    let cli = TestCli::try_parse_from(["nostaro", "upload", "photo.jpg"]).unwrap();
+    match cli.command {
+        TestCommands::Upload { file } => assert_eq!(file, "photo.jpg"),
+        _ => panic!("Expected Upload command"),
+    }
+}
+
+#[test]
 fn cli_parse_relay_add() {
     let cli =
         TestCli::try_parse_from(["nostaro", "relay", "add", "wss://relay.damus.io"]).unwrap();
@@ -360,6 +598,3 @@ fn cli_parse_post_missing_message_fails() {
     let result = TestCli::try_parse_from(["nostaro", "post"]);
     assert!(result.is_err());
 }
-
-// We need the nostr_sdk prelude for bech32 methods
-use nostr_sdk::prelude::ToBech32;

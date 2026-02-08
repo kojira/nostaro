@@ -22,6 +22,23 @@ pub async fn post_note(client: &Client, content: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn reply_note(client: &Client, reply_to: &Event, content: &str) -> Result<()> {
+    let reply_id_hex = reply_to.id.to_hex();
+    let tags = vec![
+        Tag::parse(["e", &reply_id_hex, "", "reply"])?,
+        Tag::public_key(reply_to.pubkey),
+    ];
+    let builder = EventBuilder::text_note(content).tags(tags);
+    client.send_event_builder(builder).await?;
+    Ok(())
+}
+
+pub async fn repost_event(client: &Client, event: &Event) -> Result<()> {
+    let builder = EventBuilder::repost(event, None);
+    client.send_event_builder(builder).await?;
+    Ok(())
+}
+
 pub async fn fetch_timeline(client: &Client, limit: usize) -> Result<Vec<Event>> {
     let filter = Filter::new().kind(Kind::TextNote).limit(limit);
     let events = client
@@ -40,6 +57,19 @@ pub async fn fetch_timeline_for_authors(
     let filter = Filter::new()
         .kind(Kind::TextNote)
         .authors(authors.to_vec())
+        .limit(limit);
+    let events = client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await?;
+    let mut events: Vec<Event> = events.into_iter().collect();
+    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(events)
+}
+
+pub async fn search_notes(client: &Client, query: &str, limit: usize) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::TextNote)
+        .search(query)
         .limit(limit);
     let events = client
         .fetch_events(filter, Duration::from_secs(10))
@@ -104,4 +134,65 @@ pub async fn fetch_event_by_id(client: &Client, event_id: &EventId) -> Result<Op
         .await?;
 
     Ok(events.into_iter().next())
+}
+
+pub async fn send_dm(client: &Client, receiver: PublicKey, message: &str) -> Result<()> {
+    client
+        .send_private_msg(receiver, message, [])
+        .await?;
+    Ok(())
+}
+
+pub async fn fetch_gift_wraps(client: &Client, pubkey: &PublicKey, limit: usize) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::GiftWrap)
+        .pubkey(*pubkey)
+        .limit(limit);
+    let events = client
+        .fetch_events(filter, Duration::from_secs(15))
+        .await?;
+    Ok(events.into_iter().collect())
+}
+
+pub async fn fetch_channels(client: &Client, limit: usize) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::ChannelCreation)
+        .limit(limit);
+    let events = client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await?;
+    let mut events: Vec<Event> = events.into_iter().collect();
+    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(events)
+}
+
+pub async fn fetch_channel_messages(
+    client: &Client,
+    channel_id: &EventId,
+    limit: usize,
+) -> Result<Vec<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::ChannelMessage)
+        .event(*channel_id)
+        .limit(limit);
+    let events = client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await?;
+    let mut events: Vec<Event> = events.into_iter().collect();
+    events.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    Ok(events)
+}
+
+pub async fn post_channel_message(
+    client: &Client,
+    channel_id: &EventId,
+    content: &str,
+) -> Result<()> {
+    let ch_hex = channel_id.to_hex();
+    let tags = vec![
+        Tag::parse(["e", &ch_hex, "", "root"])?,
+    ];
+    let builder = EventBuilder::new(Kind::ChannelMessage, content).tags(tags);
+    client.send_event_builder(builder).await?;
+    Ok(())
 }

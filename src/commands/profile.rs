@@ -1,6 +1,7 @@
 use anyhow::{bail, Result};
 use nostr_sdk::prelude::*;
 
+use crate::cache::CacheDb;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
@@ -20,18 +21,29 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
 
     let metadata = client::fetch_profile(&nostr_client, &pubkey).await?;
 
-    if let Some(metadata) = metadata {
-        if let Some(name) = metadata.name {
+    if let Some(ref metadata) = metadata {
+        if let Some(ref name) = metadata.name {
             println!("Name:         {}", name);
         }
-        if let Some(display_name) = metadata.display_name {
+        if let Some(ref display_name) = metadata.display_name {
             println!("Display Name: {}", display_name);
         }
-        if let Some(about) = metadata.about {
+        if let Some(ref about) = metadata.about {
             println!("About:        {}", about);
         }
-        if let Some(picture) = metadata.picture {
+        if let Some(ref picture) = metadata.picture {
             println!("Picture:      {}", picture);
+        }
+
+        // Cache the profile
+        if let Ok(cache) = CacheDb::open() {
+            let _ = cache.store_profile(
+                &pubkey.to_hex(),
+                metadata.name.as_deref(),
+                metadata.display_name.as_deref(),
+                metadata.about.as_deref(),
+                metadata.picture.as_ref().map(|u| u.as_str()),
+            );
         }
     } else {
         println!("No profile metadata found.");
@@ -58,7 +70,6 @@ pub async fn set(
     let own_keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&own_keys, &config).await?;
 
-    // Fetch existing metadata to merge
     let mut metadata = client::fetch_profile(&nostr_client, &own_keys.public_key())
         .await?
         .unwrap_or_else(Metadata::new);

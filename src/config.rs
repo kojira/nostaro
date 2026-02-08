@@ -7,6 +7,8 @@ pub struct NostaroConfig {
     pub secret_key: Option<String>,
     pub relays: Vec<String>,
     pub default_relays: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub blossom_server: Option<String>,
 }
 
 impl Default for NostaroConfig {
@@ -21,6 +23,7 @@ impl Default for NostaroConfig {
             secret_key: None,
             relays: Vec::new(),
             default_relays,
+            blossom_server: None,
         }
     }
 }
@@ -71,6 +74,12 @@ impl NostaroConfig {
             self.relays.clone()
         }
     }
+
+    pub fn blossom_url(&self) -> String {
+        self.blossom_server
+            .clone()
+            .unwrap_or_else(|| "https://blossom.primal.net".to_string())
+    }
 }
 
 #[cfg(test)]
@@ -107,6 +116,7 @@ mod tests {
             secret_key: Some("nsec1test".to_string()),
             relays: vec!["wss://relay.example.com".to_string()],
             default_relays: vec!["wss://default.relay".to_string()],
+            blossom_server: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: NostaroConfig = toml::from_str(&serialized).unwrap();
@@ -117,7 +127,7 @@ mod tests {
 
     #[test]
     fn test_save_and_load_from_file() {
-        let dir = std::env::temp_dir().join("nostaro_test_config_v2");
+        let dir = std::env::temp_dir().join("nostaro_test_config_v3");
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("config.toml");
 
@@ -125,6 +135,7 @@ mod tests {
             secret_key: Some("nsec1testkey".to_string()),
             relays: vec!["wss://relay.test.com".to_string()],
             default_relays: vec!["wss://default.test.com".to_string()],
+            blossom_server: None,
         };
         config.save_to(&path).unwrap();
 
@@ -138,9 +149,33 @@ mod tests {
 
     #[test]
     fn test_load_from_nonexistent_returns_default() {
-        let path = std::env::temp_dir().join("nostaro_nonexistent_config_v2.toml");
+        let path = std::env::temp_dir().join("nostaro_nonexistent_config_v3.toml");
         let loaded = NostaroConfig::load_from(&path).unwrap();
         assert!(loaded.secret_key.is_none());
         assert!(loaded.relays.is_empty());
+    }
+
+    #[test]
+    fn test_blossom_server_not_serialized_when_none() {
+        let config = NostaroConfig {
+            secret_key: Some("nsec1test".to_string()),
+            relays: vec![],
+            default_relays: vec!["wss://relay.damus.io".to_string()],
+            blossom_server: None,
+        };
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        assert!(!serialized.contains("blossom_server"));
+    }
+
+    #[test]
+    fn test_config_without_blossom_field_loads() {
+        let toml_str = r#"
+secret_key = "nsec1test"
+relays = ["wss://relay.damus.io"]
+default_relays = ["wss://relay.damus.io"]
+"#;
+        let config: NostaroConfig = toml::from_str(toml_str).unwrap();
+        assert!(config.blossom_server.is_none());
+        assert_eq!(config.blossom_url(), "https://blossom.primal.net");
     }
 }
