@@ -149,6 +149,21 @@ enum ProfileAction {
         /// Profile picture URL
         #[arg(long)]
         picture: Option<String>,
+        /// Lightning address (lud16)
+        #[arg(long)]
+        lud16: Option<String>,
+        /// LNURL pay URL (lud06)
+        #[arg(long)]
+        lud06: Option<String>,
+        /// NIP-05 identifier
+        #[arg(long)]
+        nip05: Option<String>,
+        /// Banner image URL
+        #[arg(long)]
+        banner: Option<String>,
+        /// Website URL
+        #[arg(long)]
+        website: Option<String>,
     },
 }
 
@@ -170,6 +185,32 @@ enum DmAction {
 
 #[derive(Subcommand)]
 enum ChannelAction {
+    /// Create a new channel (kind:40)
+    Create {
+        /// Channel name
+        #[arg(long)]
+        name: String,
+        /// Channel description
+        #[arg(long)]
+        about: Option<String>,
+        /// Channel picture URL
+        #[arg(long)]
+        picture: Option<String>,
+    },
+    /// Edit channel metadata (kind:41)
+    Edit {
+        /// Channel ID (hex or note1...)
+        id: String,
+        /// New channel name
+        #[arg(long)]
+        name: String,
+        /// New channel description
+        #[arg(long)]
+        about: Option<String>,
+        /// New channel picture URL
+        #[arg(long)]
+        picture: Option<String>,
+    },
     /// List channels
     List,
     /// Read channel messages
@@ -232,12 +273,22 @@ async fn main() -> anyhow::Result<()> {
                 display_name,
                 about,
                 picture,
+                lud16,
+                lud06,
+                nip05,
+                banner,
+                website,
             } => {
                 commands::profile::set(
                     name.as_deref(),
                     display_name.as_deref(),
                     about.as_deref(),
                     picture.as_deref(),
+                    lud16.as_deref(),
+                    lud06.as_deref(),
+                    nip05.as_deref(),
+                    banner.as_deref(),
+                    website.as_deref(),
                 )
                 .await?
             }
@@ -260,6 +311,21 @@ async fn main() -> anyhow::Result<()> {
             message,
         } => commands::zap::run(&target, amount, message.as_deref()).await?,
         Commands::Channel { action } => match action {
+            ChannelAction::Create {
+                name,
+                about,
+                picture,
+            } => {
+                commands::channel::create(&name, about.as_deref(), picture.as_deref()).await?
+            }
+            ChannelAction::Edit {
+                id,
+                name,
+                about,
+                picture,
+            } => {
+                commands::channel::edit(&id, &name, about.as_deref(), picture.as_deref()).await?
+            }
             ChannelAction::List => commands::channel::list().await?,
             ChannelAction::Read { id } => commands::channel::read(&id).await?,
             ChannelAction::Post { id, message } => {

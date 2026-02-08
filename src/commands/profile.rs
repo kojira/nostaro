@@ -34,6 +34,18 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
         if let Some(ref picture) = metadata.picture {
             println!("Picture:      {}", picture);
         }
+        if let Some(ref banner) = metadata.banner {
+            println!("Banner:       {}", banner);
+        }
+        if let Some(ref website) = metadata.website {
+            println!("Website:      {}", website);
+        }
+        if let Some(ref lud16) = metadata.lud16 {
+            println!("Lud16:        {}", lud16);
+        }
+        if let Some(ref nip05) = metadata.nip05 {
+            println!("NIP-05:       {}", nip05);
+        }
 
         // Cache the profile
         if let Ok(cache) = CacheDb::open() {
@@ -61,9 +73,23 @@ pub async fn set(
     display_name: Option<&str>,
     about: Option<&str>,
     picture: Option<&str>,
+    lud16: Option<&str>,
+    lud06: Option<&str>,
+    nip05: Option<&str>,
+    banner: Option<&str>,
+    website: Option<&str>,
 ) -> Result<()> {
-    if name.is_none() && display_name.is_none() && about.is_none() && picture.is_none() {
-        bail!("At least one field must be specified (--name, --display-name, --about, --picture)");
+    if name.is_none()
+        && display_name.is_none()
+        && about.is_none()
+        && picture.is_none()
+        && lud16.is_none()
+        && lud06.is_none()
+        && nip05.is_none()
+        && banner.is_none()
+        && website.is_none()
+    {
+        bail!("At least one field must be specified (--name, --display-name, --about, --picture, --lud16, --lud06, --nip05, --banner, --website)");
     }
 
     let config = NostaroConfig::load()?;
@@ -86,6 +112,23 @@ pub async fn set(
     if let Some(v) = picture {
         let url = Url::parse(v)?;
         metadata = metadata.picture(url);
+    }
+    if let Some(v) = lud16 {
+        metadata = metadata.lud16(v);
+    }
+    if let Some(v) = lud06 {
+        metadata = metadata.lud06(v);
+    }
+    if let Some(v) = nip05 {
+        metadata = metadata.nip05(v);
+    }
+    if let Some(v) = banner {
+        let url = Url::parse(v)?;
+        metadata = metadata.banner(url);
+    }
+    if let Some(v) = website {
+        let url = Url::parse(v)?;
+        metadata = metadata.website(url);
     }
 
     println!("Setting profile metadata...");

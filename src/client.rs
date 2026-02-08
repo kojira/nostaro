@@ -183,6 +183,25 @@ pub async fn fetch_channel_messages(
     Ok(events)
 }
 
+pub async fn create_channel(client: &Client, content: &str) -> Result<EventId> {
+    let builder = EventBuilder::new(Kind::ChannelCreation, content);
+    let output = client.send_event_builder(builder).await?;
+    Ok(*output.id())
+}
+
+pub async fn edit_channel(
+    client: &Client,
+    channel_id: &EventId,
+    content: &str,
+    relay_url: &str,
+) -> Result<()> {
+    let ch_hex = channel_id.to_hex();
+    let tags = vec![Tag::parse(["e", &ch_hex, relay_url])?];
+    let builder = EventBuilder::new(Kind::ChannelMetadata, content).tags(tags);
+    client.send_event_builder(builder).await?;
+    Ok(())
+}
+
 pub async fn post_channel_message(
     client: &Client,
     channel_id: &EventId,

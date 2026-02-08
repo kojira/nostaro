@@ -6,6 +6,61 @@ use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
 
+pub async fn create(name: &str, about: Option<&str>, picture: Option<&str>) -> Result<()> {
+    let config = NostaroConfig::load()?;
+    let keys = keys::keys_from_config(&config)?;
+    let nostr_client = client::create_client(&keys, &config).await?;
+
+    let mut meta = serde_json::json!({ "name": name });
+    if let Some(a) = about {
+        meta["about"] = serde_json::json!(a);
+    }
+    if let Some(p) = picture {
+        meta["picture"] = serde_json::json!(p);
+    }
+    let content = serde_json::to_string(&meta)?;
+
+    println!("Creating channel...");
+    let event_id = client::create_channel(&nostr_client, &content).await?;
+    println!("Channel created! ID: {}", event_id.to_hex());
+
+    Ok(())
+}
+
+pub async fn edit(
+    channel_id_str: &str,
+    name: &str,
+    about: Option<&str>,
+    picture: Option<&str>,
+) -> Result<()> {
+    let config = NostaroConfig::load()?;
+    let keys = keys::keys_from_config(&config)?;
+    let nostr_client = client::create_client(&keys, &config).await?;
+
+    let channel_id = EventId::parse(channel_id_str)?;
+
+    let mut meta = serde_json::json!({ "name": name });
+    if let Some(a) = about {
+        meta["about"] = serde_json::json!(a);
+    }
+    if let Some(p) = picture {
+        meta["picture"] = serde_json::json!(p);
+    }
+    let content = serde_json::to_string(&meta)?;
+
+    let relay_url = config
+        .active_relays()
+        .first()
+        .cloned()
+        .unwrap_or_default();
+
+    println!("Updating channel metadata...");
+    client::edit_channel(&nostr_client, &channel_id, &content, &relay_url).await?;
+    println!("Channel metadata updated!");
+
+    Ok(())
+}
+
 pub async fn list() -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
