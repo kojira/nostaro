@@ -12,4 +12,5 @@ pub mod repost;
 pub mod search;
 pub mod timeline;
 pub mod upload;
+pub mod watch;
 pub mod zap;

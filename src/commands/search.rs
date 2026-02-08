@@ -30,6 +30,8 @@ pub async fn run(query: &str, limit: usize) -> Result<()> {
 
         println!("[{}] {}", short_npub, datetime);
         println!("{}", event.content);
+        let note_id = event.id.to_bech32()?;
+        println!("  id: {}", note_id);
         println!("{}", "-".repeat(60));
     }
 

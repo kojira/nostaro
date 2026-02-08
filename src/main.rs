@@ -125,6 +125,16 @@ enum Commands {
         #[command(subcommand)]
         action: RelayAction,
     },
+
+    /// Watch for mentions, replies, and reactions in real-time
+    Watch {
+        /// Discord webhook URL (required)
+        #[arg(long)]
+        webhook: String,
+        /// Target npub to watch (defaults to your own)
+        #[arg(long)]
+        npub: Option<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -346,6 +356,9 @@ async fn main() -> anyhow::Result<()> {
             RelayAction::Remove { url } => commands::relay::remove(&url).await?,
             RelayAction::List => commands::relay::list().await?,
         },
+        Commands::Watch { webhook, npub } => {
+            commands::watch::run(&webhook, npub.as_deref()).await?
+        }
     }
 
     Ok(())
