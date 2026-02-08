@@ -154,6 +154,37 @@ pub async fn fetch_gift_wraps(client: &Client, pubkey: &PublicKey, limit: usize)
     Ok(events.into_iter().collect())
 }
 
+pub async fn fetch_nip04_dms(client: &Client, pubkey: &PublicKey, limit: usize) -> Result<Vec<Event>> {
+    // Fetch DMs where user is author or recipient
+    let filter_sent = Filter::new()
+        .kind(Kind::EncryptedDirectMessage)
+        .author(*pubkey)
+        .limit(limit);
+
+    let filter_received = Filter::new()
+        .kind(Kind::EncryptedDirectMessage)
+        .pubkey(*pubkey)
+        .limit(limit);
+
+    let mut all_events = Vec::new();
+
+    let sent = client
+        .fetch_events(filter_sent, Duration::from_secs(10))
+        .await?;
+    all_events.extend(sent.into_iter());
+
+    let received = client
+        .fetch_events(filter_received, Duration::from_secs(10))
+        .await?;
+    all_events.extend(received.into_iter());
+
+    // Remove duplicates and sort by timestamp
+    all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    all_events.dedup_by(|a, b| a.id == b.id);
+
+    Ok(all_events)
+}
+
 pub async fn fetch_channels(client: &Client, limit: usize) -> Result<Vec<Event>> {
     let filter = Filter::new()
         .kind(Kind::ChannelCreation)
