@@ -1,3 +1,5 @@
+use std::process::Command;
+
 use anyhow::{anyhow, bail, Result};
 use nostr_sdk::prelude::*;
 use serde::Deserialize;
@@ -90,13 +92,23 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
         .await?;
 
     let target_npub = target_pubkey.to_bech32()?;
-    println!(
-        "Zap request sent! {} sats to {}",
-        amount,
-        &target_npub[..12.min(target_npub.len())]
-    );
-    println!("\nLightning Invoice:");
-    println!("{}", invoice_resp.pr);
+
+    println!("Paying invoice via Cashu...");
+    let output = Command::new("/Users/kojira/.openclaw/workspace/data/cashu-venv/bin/cashu")
+        .args(["-h", "https://mint.coinos.io", "pay", &invoice_resp.pr, "-y"])
+        .output()?;
+
+    if output.status.success() {
+        println!(
+            "⚡ Zap sent successfully! {} sats to {}",
+            amount,
+            &target_npub[..12.min(target_npub.len())]
+        );
+    } else {
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("Cashu payment failed:\n{}{}", stdout, stderr);
+    }
 
     Ok(())
 }
