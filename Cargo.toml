@@ -1,0 +1,15 @@
+[package]
+name = "nostaro"
+version = "0.2.0"
+edition = "2021"
+description = "A Nostr CLI tool"
+
+[dependencies]
+nostr-sdk = "0.41"
+clap = { version = "4", features = ["derive"] }
+tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+dirs = "6"
+anyhow = "1"
+chrono = "0.4"
