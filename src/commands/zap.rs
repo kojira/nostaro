@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::utils::resolve_pubkey;
 
 #[derive(Deserialize)]
 struct LnurlResponse {
@@ -29,7 +30,7 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    let target_pubkey = PublicKey::parse(target)?;
+    let target_pubkey = resolve_pubkey(target)?;
 
     let metadata = client::fetch_profile(&nostr_client, &target_pubkey)
         .await?

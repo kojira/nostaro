@@ -4,13 +4,14 @@ use nostr_sdk::prelude::*;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::utils::resolve_pubkey;
 
 pub async fn follow(pubkey_str: &str) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    let pubkey = PublicKey::parse(pubkey_str)?;
+    let pubkey = resolve_pubkey(pubkey_str)?;
 
     let mut contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
 
@@ -32,7 +33,7 @@ pub async fn unfollow(pubkey_str: &str) -> Result<()> {
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    let pubkey = PublicKey::parse(pubkey_str)?;
+    let pubkey = resolve_pubkey(pubkey_str)?;
 
     let mut contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
 

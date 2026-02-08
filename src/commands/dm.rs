@@ -5,13 +5,14 @@ use nostr_sdk::prelude::*;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::utils::resolve_pubkey;
 
 pub async fn send(npub_str: &str, message: &str, use_nip04: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    let receiver = PublicKey::parse(npub_str)?;
+    let receiver = resolve_pubkey(npub_str)?;
 
     if use_nip04 {
         println!("Sending DM (NIP-04)...");
@@ -33,7 +34,7 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
     let nostr_client = client::create_client(&keys, &config).await?;
 
     let filter_pubkey = match npub_filter {
-        Some(pk) => Some(PublicKey::parse(pk)?),
+        Some(pk) => Some(resolve_pubkey(pk)?),
         None => None,
     };
 

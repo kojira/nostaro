@@ -5,6 +5,7 @@ use std::collections::HashMap;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::utils::resolve_pubkey;
 
 pub async fn run(webhook_url: &str, npub_str: Option<&str>) -> Result<()> {
     let config = NostaroConfig::load()?;
@@ -12,7 +13,7 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>) -> Result<()> {
     let nostr_client = client::create_client(&own_keys, &config).await?;
 
     let target_pubkey = match npub_str {
-        Some(pk) => PublicKey::parse(pk)?,
+        Some(pk) => resolve_pubkey(pk)?,
         None => own_keys.public_key(),
     };
 
