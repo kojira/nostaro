@@ -114,6 +114,43 @@ pub async fn fetch_contacts(client: &Client, pubkey: &PublicKey) -> Result<Vec<P
     }
 }
 
+pub async fn fetch_followers(client: &Client, pubkey: &PublicKey) -> Result<Vec<PublicKey>> {
+    let filter = Filter::new()
+        .kind(Kind::ContactList)
+        .pubkey(*pubkey);
+
+    let events: Vec<Event> = client
+        .fetch_events(filter, Duration::from_secs(15))
+        .await?
+        .into_iter()
+        .collect();
+
+    // Deduplicate by author: keep only the latest ContactList per author
+    let mut latest: std::collections::HashMap<PublicKey, Timestamp> =
+        std::collections::HashMap::new();
+    for event in &events {
+        let entry = latest.entry(event.pubkey).or_insert(event.created_at);
+        if event.created_at > *entry {
+            *entry = event.created_at;
+        }
+    }
+
+    // Collect only authors whose latest ContactList still contains the target pubkey
+    let mut followers = Vec::new();
+    for event in &events {
+        if Some(&event.created_at) == latest.get(&event.pubkey) {
+            let has_target = event.tags.iter().any(|tag: &Tag| {
+                matches!(tag.as_standardized(), Some(TagStandard::PublicKey { public_key, .. }) if *public_key == *pubkey)
+            });
+            if has_target {
+                followers.push(event.pubkey);
+            }
+        }
+    }
+
+    Ok(followers)
+}
+
 pub async fn publish_contact_list(client: &Client, contacts: &[PublicKey]) -> Result<()> {
     let mut tags = Vec::new();
     for contact in contacts {

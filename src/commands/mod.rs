@@ -1,6 +1,7 @@
 pub mod cache;
 pub mod channel;
 pub mod dm;
+pub mod event;
 pub mod follow;
 pub mod init;
 pub mod post;
@@ -12,5 +13,6 @@ pub mod repost;
 pub mod search;
 pub mod timeline;
 pub mod upload;
+pub mod vanity;
 pub mod watch;
 pub mod zap;

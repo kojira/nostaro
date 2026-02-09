@@ -68,7 +68,16 @@ enum Commands {
     },
 
     /// List users you're following
-    Following,
+    Following {
+        /// Public key (npub, hex, or nprofile) to look up; defaults to your own
+        npub: Option<String>,
+    },
+
+    /// List followers
+    Followers {
+        /// Public key (npub, hex, or nprofile) to look up; defaults to your own
+        npub: Option<String>,
+    },
 
     /// React to a note (kind:7)
     React {
@@ -134,6 +143,31 @@ enum Commands {
         /// Target npub to watch (defaults to your own)
         #[arg(long)]
         npub: Option<String>,
+        /// NIP-28 channel ID to watch (hex)
+        #[arg(long)]
+        channel: Option<String>,
+    },
+
+    /// Post a custom kind Nostr event
+    Event {
+        /// Event kind number
+        #[arg(short, long)]
+        kind: u16,
+        /// Tags in "key,value" format (repeatable)
+        #[arg(short, long)]
+        tag: Vec<String>,
+        /// Event content
+        #[arg(short, long, default_value = "")]
+        content: String,
+    },
+
+    /// Search for a vanity npub with a given prefix
+    Vanity {
+        /// Desired prefix after npub1
+        prefix: String,
+        /// Number of threads (default: CPU cores)
+        #[arg(short, long)]
+        threads: Option<usize>,
     },
 }
 
@@ -308,7 +342,8 @@ async fn main() -> anyhow::Result<()> {
         },
         Commands::Follow { npub } => commands::follow::follow(&npub).await?,
         Commands::Unfollow { npub } => commands::follow::unfollow(&npub).await?,
-        Commands::Following => commands::follow::following().await?,
+        Commands::Following { npub } => commands::follow::following(npub.as_deref()).await?,
+        Commands::Followers { npub } => commands::follow::followers(npub.as_deref()).await?,
         Commands::React { note_id, emoji } => {
             commands::react::run(&note_id, &emoji).await?
         }
@@ -359,8 +394,14 @@ async fn main() -> anyhow::Result<()> {
             RelayAction::Remove { url } => commands::relay::remove(&url).await?,
             RelayAction::List => commands::relay::list().await?,
         },
-        Commands::Watch { webhook, npub } => {
-            commands::watch::run(&webhook, npub.as_deref()).await?
+        Commands::Event { kind, tag, content } => {
+            commands::event::run(kind, tag, &content).await?
+        }
+        Commands::Watch { webhook, npub, channel } => {
+            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref()).await?
+        }
+        Commands::Vanity { prefix, threads } => {
+            commands::vanity::run(&prefix, threads)?
         }
     }
 
