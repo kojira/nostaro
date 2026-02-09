@@ -105,21 +105,40 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                     } else {
                         &event.content
                     };
-                    let target_note = event
-                        .tags
-                        .iter()
-                        .find_map(|t| {
-                            if let Some(TagStandard::Event { event_id, .. }) = t.as_standardized()
-                            {
-                                event_id.to_bech32().ok()
-                            } else {
-                                None
+                    let npub_str = event.pubkey.to_bech32()?;
+
+                    // Get the original event ID from e tag
+                    let original_event_id = event.tags.iter().find_map(|t| {
+                        if let Some(TagStandard::Event { event_id, .. }) = t.as_standardized() {
+                            Some(*event_id)
+                        } else {
+                            None
+                        }
+                    });
+
+                    let mut original_content_line = String::new();
+                    let mut original_note_str = "unknown".to_string();
+
+                    if let Some(orig_id) = original_event_id {
+                        original_note_str = orig_id.to_bech32().unwrap_or_else(|_| "unknown".to_string());
+
+                        // Fetch the original post
+                        let filter = Filter::new().id(orig_id).kind(Kind::TextNote).limit(1);
+                        if let Ok(events) = nostr_client
+                            .fetch_events(filter, std::time::Duration::from_secs(5))
+                            .await
+                        {
+                            if let Some(orig_event) = events.first() {
+                                let content: String = orig_event.content.chars().take(200).collect();
+                                let ellipsis = if orig_event.content.chars().count() > 200 { "..." } else { "" };
+                                original_content_line = format!("\n\n> {}{}", content, ellipsis);
                             }
-                        })
-                        .unwrap_or_else(|| "unknown".to_string());
+                        }
+                    }
+
                     format!(
-                        "⚡ **リアクション** from {}\nEmoji: {} → {}\n🔗 {}",
-                        sender_name, emoji, target_note, note_id
+                        "**{}** reacted {}\nnpub: {}{}\nnote: {}",
+                        sender_name, emoji, npub_str, original_content_line, original_note_str
                     )
                 }
                 _ => continue,
