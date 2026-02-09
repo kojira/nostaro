@@ -5,39 +5,41 @@
 
 ---
 
-## 特徴
+## Features
 
-- **Rust 製** — 安全で高速、async/await による非同期処理
-- **軽量シングルバイナリ** — `cargo build --release` で即デプロイ
-- **全 17 コマンド** — 投稿・リプライ・DM・Zap・チャンネル・ファイルアップロードまで網羅
-- **ローカルキャッシュ** — SQLite でタイムラインとプロフィールをキャッシュ
-- **NIP 幅広く対応** — NIP-1, 19, 25, 28, 44, 50, 57, 96 など
+- **Written in Rust** — Safe, fast, fully async
+- **Single binary** — `cargo build --release` and you're done
+- **22 commands** — Post, reply, DM, zap, channels, watch, upload, vanity keys and more
+- **Local cache** — SQLite-backed timeline and profile caching
+- **Broad NIP support** — NIP-1, 4, 17, 19, 25, 28, 44, 50, 57, 59, 96, Blossom
+- **nprofile support** — Accept `npub`, hex, or `nprofile` anywhere a pubkey is needed
+- **Real-time watch** — Monitor mentions, replies, reactions with Discord webhook notifications
 
 ---
 
-## インストール
+## Install
 
 ```bash
-# リポジトリからインストール
+# From source
 cargo install --path .
 
-# または手動ビルド
+# Or manual build
 cargo build --release
-# バイナリ: target/release/nostaro
+# Binary: target/release/nostaro
 ```
 
 ---
 
-## 初期設定
+## Setup
 
 ```bash
-# 鍵の生成 or インポート
+# Generate a new keypair or import an existing one
 nostaro init
 ```
 
-対話形式で新規鍵ペアの生成、または既存の `nsec1...` / hex 秘密鍵のインポートができる。
+Interactive prompt for new key generation or importing an `nsec1...` / hex secret key.
 
-設定ファイル: `~/.nostaro/config.toml`
+Config file: `~/.nostaro/config.toml`
 
 ```toml
 secret_key = "nsec1..."
@@ -48,114 +50,254 @@ blossom_server = "https://blossom.primal.net"
 
 ---
 
-## コマンド一覧
+## Commands
 
-### 投稿・リアクション
+### Post & React
 
-| コマンド | 説明 | Kind |
-|---------|------|------|
-| `nostaro post <message>` | テキストノート送信 | kind:1 |
-| `nostaro reply <note_id> <message>` | リプライ | kind:1 |
-| `nostaro repost <note_id>` | リポスト | kind:6 |
-| `nostaro react <note_id> [emoji]` | リアクション（デフォルト: ⚡） | kind:7 |
+```bash
+# Post a text note
+nostaro post "Hello Nostr!"
 
-### タイムライン・検索
+# Reply to a note
+nostaro reply <note_id> "Nice post!"
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro timeline [--limit N]` | タイムライン取得（デフォルト: 20件） |
-| `nostaro search <query> [--limit N]` | ノート検索（NIP-50） |
+# Repost
+nostaro repost <note_id>
 
-### プロフィール
+# React (default emoji: ⚡)
+nostaro react <note_id>
+nostaro react <note_id> "🤙"
+```
 
-| コマンド | 説明 | Kind |
-|---------|------|------|
-| `nostaro profile show [--pubkey NPUB]` | プロフィール表示 | kind:0 |
-| `nostaro profile set [--name ...] [--about ...]` | プロフィール設定 | kind:0 |
+### Timeline & Search
 
-### フォロー管理
+```bash
+# View timeline (default: 20 notes)
+nostaro timeline
+nostaro timeline --limit 50
 
-| コマンド | 説明 | Kind |
-|---------|------|------|
-| `nostaro follow <npub>` | フォロー | kind:3 |
-| `nostaro unfollow <npub>` | アンフォロー | kind:3 |
-| `nostaro following` | フォローリスト表示 | kind:3 |
+# Search notes (NIP-50)
+nostaro search "rust nostr" --limit 10
+```
 
-### DM（暗号化ダイレクトメッセージ）
+### Profile
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro dm send <npub> <message>` | DM 送信（NIP-44 / Gift Wrap） |
-| `nostaro dm read [npub]` | DM 受信（送信者フィルタ可） |
+```bash
+# View your profile
+nostaro profile show
 
-### Zap
+# View someone else's profile (npub, hex, or nprofile)
+nostaro profile show --pubkey npub1...
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro zap <target> <amount_sats> [--message MSG]` | Zap 送信（NIP-57） |
+# Update your profile
+nostaro profile set --name "nostaro" --about "Nostr bot"
+```
 
-target は npub またはノート ID。対象プロフィールに Lightning address (lud06/lud16) が必要。
+### Follow Management
 
-### チャンネル（パブリックチャット）
+```bash
+# Follow / unfollow
+nostaro follow npub1...
+nostaro unfollow npub1...
 
-| コマンド | 説明 | Kind |
-|---------|------|------|
-| `nostaro channel list` | チャンネル一覧 | kind:40 |
-| `nostaro channel read <channel_id>` | チャンネルメッセージ取得 | kind:42 |
-| `nostaro channel post <channel_id> <message>` | チャンネルに投稿 | kind:42 |
+# List following
+nostaro following
 
-### ファイルアップロード
+# List followers
+nostaro followers
+nostaro followers npub1...
+```
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro upload <file_path> [--server URL] [--nip96]` | ファイルアップロード |
+### DM (Direct Messages)
 
-デフォルトは Blossom プロトコル（`blossom.primal.net`）。`--nip96` フラグで NIP-96（`nostr.build`）も対応。
+Supports both **NIP-17 (Gift Wrap)** and **NIP-04** encryption.
 
-### キャッシュ管理
+```bash
+# Send DM (default: NIP-17/NIP-44 encrypted)
+nostaro dm send npub1... "Secret message"
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro cache stats` | キャッシュ統計表示 |
-| `nostaro cache clear` | キャッシュクリア |
+# Send DM using legacy NIP-04
+nostaro dm send --nip04 npub1... "Legacy secret"
 
-ローカル SQLite（`~/.nostaro/cache.db`）にイベントとプロフィールをキャッシュ。
+# Read DMs (all)
+nostaro dm read
 
-### リレー管理
+# Read DMs from a specific sender
+nostaro dm read npub1...
+```
 
-| コマンド | 説明 |
-|---------|------|
-| `nostaro relay add <url>` | リレー追加 |
-| `nostaro relay remove <url>` | リレー削除 |
-| `nostaro relay list` | リレー一覧 |
+### Zap (Lightning)
+
+Send zaps via NIP-57. Requires the target profile to have a Lightning address (`lud06`/`lud16`). Uses `cashu-cli` for Lightning invoice payment.
+
+```bash
+# Zap a user (100 sats)
+nostaro zap npub1... 100
+
+# Zap a note with a message
+nostaro zap note1... 1000 --message "Great post!"
+```
+
+### Channel (NIP-28 Public Chat)
+
+```bash
+# Create a channel
+nostaro channel create --name "my-channel" --about "Description" --picture "https://..."
+
+# Edit channel metadata
+nostaro channel edit <channel_id> --name "new-name" --about "Updated description"
+
+# List channels
+nostaro channel list
+
+# Read channel messages
+nostaro channel read <channel_id>
+
+# Post to a channel
+nostaro channel post <channel_id> "Hello channel!"
+```
+
+### Watch (Real-time Monitoring + Discord Webhook)
+
+Monitor mentions, replies, reactions, and reposts in real-time. Sends notifications to a Discord webhook with the poster's profile icon and display name.
+
+```bash
+# Watch your own mentions/replies/reactions
+nostaro watch --webhook https://discord.com/api/webhooks/...
+
+# Watch a specific user
+nostaro watch --webhook https://discord.com/api/webhooks/... --npub npub1...
+
+# Watch a NIP-28 channel
+nostaro watch --webhook https://discord.com/api/webhooks/... --channel <hex_channel_id>
+```
+
+**Features:**
+- Detects mentions, replies, reactions (kind:7), and reposts (kind:6)
+- Reaction notifications include the original post as a quote
+- Uses kind:0 profile metadata (icon, display name) for webhook avatar
+- Runs continuously — ideal for background monitoring
+
+### Event (Custom Kind)
+
+```bash
+# Post a custom kind event
+nostaro event --kind 30023 --content "Long-form content" --tag "d,my-article" --tag "title,My Article"
+```
+
+### Vanity Key Generation
+
+```bash
+# Find a keypair whose npub starts with a given prefix
+nostaro vanity abc
+
+# Use more threads
+nostaro vanity abc --threads 8
+```
+
+### File Upload
+
+```bash
+# Upload via Blossom (default)
+nostaro upload photo.jpg
+
+# Upload via NIP-96
+nostaro upload photo.jpg --nip96
+
+# Specify a custom Blossom server
+nostaro upload photo.jpg --server https://my-blossom.example.com
+```
+
+### Cache Management
+
+```bash
+# Show cache stats
+nostaro cache stats
+
+# Clear cache
+nostaro cache clear
+```
+
+Local SQLite cache at `~/.nostaro/cache.db`.
+
+### Relay Management
+
+```bash
+nostaro relay list
+nostaro relay add wss://relay.example.com
+nostaro relay remove wss://relay.example.com
+```
 
 ---
 
-## 対応 NIP 一覧
+## Running as a Background Service (macOS launchd)
 
-| NIP | 内容 |
-|-----|------|
-| NIP-01 | 基本プロトコル（イベント作成・署名・取得） |
-| NIP-02 | コンタクトリスト（フォロー管理） |
-| NIP-19 | bech32 エンコーディング（npub, nsec, note1, nprofile） |
-| NIP-25 | リアクション（kind:7） |
-| NIP-28 | パブリックチャンネル（kind:40/41/42） |
-| NIP-44 | 暗号化ダイレクトメッセージ |
-| NIP-50 | テキスト検索 |
-| NIP-57 | Zap（Lightning 送金） |
-| NIP-59 | Gift Wrap（DM 暗号化ラッパー） |
-| NIP-96 | HTTP ファイルアップロード |
-| Blossom (NIP-B7) | Blossom プロトコルによるファイルアップロード |
+To run `nostaro watch` persistently on macOS:
+
+```xml
+<!-- ~/Library/LaunchAgents/com.nostaro.watch.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nostaro.watch</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/nostaro</string>
+        <string>watch</string>
+        <string>--webhook</string>
+        <string>https://discord.com/api/webhooks/YOUR_WEBHOOK_URL</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>StandardOutPath</key>
+    <string>/tmp/nostaro-watch.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/nostaro-watch.err</string>
+</dict>
+</plist>
+```
+
+```bash
+# Load and start
+launchctl load ~/Library/LaunchAgents/com.nostaro.watch.plist
+
+# Stop and unload
+launchctl unload ~/Library/LaunchAgents/com.nostaro.watch.plist
+```
 
 ---
 
-## ライセンス
+## Supported NIPs
+
+| NIP | Description |
+|-----|-------------|
+| NIP-01 | Basic protocol (event creation, signing, fetching) |
+| NIP-02 | Contact list (follow management) |
+| NIP-04 | Legacy encrypted DM (kind:4) |
+| NIP-17 | Private Direct Messages (kind:14 via Gift Wrap) |
+| NIP-19 | bech32 encoding (npub, nsec, note1, nprofile) |
+| NIP-25 | Reactions (kind:7) |
+| NIP-28 | Public channels (kind:40/41/42) |
+| NIP-44 | Versioned encryption (used by NIP-17 DMs) |
+| NIP-50 | Text search |
+| NIP-57 | Zap (Lightning payments) |
+| NIP-59 | Gift Wrap (DM encryption wrapper) |
+| NIP-96 | HTTP file upload |
+| Blossom (NIP-B7) | Blossom protocol file upload |
+
+---
+
+## License
 
 [MIT License](LICENSE)
 
 ---
 
-## 開発者
+## Author
 
 **のすたろう ⚡** — AI Agent by [kojira](https://github.com/kojira)
 
