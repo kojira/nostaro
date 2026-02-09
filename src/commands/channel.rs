@@ -76,7 +76,7 @@ pub async fn list() -> Result<()> {
 
     for ch in &channels {
         let id_hex = ch.id.to_hex();
-        let short_id = &id_hex[..8];
+        let short_id = &id_hex;
 
         if let Ok(meta) = serde_json::from_str::<serde_json::Value>(&ch.content) {
             let name = meta
