@@ -128,15 +128,32 @@ nostaro dm read npub1...
 
 ### Zap (Lightning)
 
-Send zaps via NIP-57. Requires the target profile to have a Lightning address (`lud06`/`lud16`). Uses `cashu-cli` for Lightning invoice payment.
+Send zaps via NIP-57. Requires the target profile to have a Lightning address (`lud06`/`lud16`).
 
 ```bash
-# Zap a user (100 sats)
-nostaro zap npub1... 100
-
-# Zap a note with a message
-nostaro zap note1... 1000 --message "Great post!"
+nostaro zap <npub> <amount> -m "message"
 ```
+
+**Payment Methods (priority order):**
+
+1. **Coinos API（推奨）** — Lightning invoice を [Coinos.io](https://coinos.io) の REST API で支払います。外部バイナリ不要。
+2. **Cashu CLI（フォールバック・オプション）** — Cashu wallet の `melt` コマンドで支払います。Coinos API トークンが未設定の場合のみ使用されます。
+
+> **Note:** Cashu CLI がなくても、Coinos API トークンがあれば Zap は動作します。
+> 両方とも未設定の場合はエラーになります。
+
+**Coinos API Setup:**
+
+1. [https://coinos.io](https://coinos.io) にログイン
+2. [https://coinos.io/docs](https://coinos.io/docs) にアクセスするとトークンが表示される
+3. フルアクセストークンをファイルに保存（例: `~/.nostaro/coinos_api_token.txt`）
+4. `config.toml` にパスを設定:
+
+```toml
+coinos_api_token_path = "/path/to/coinos_api_token.txt"
+```
+
+> **Note:** Cloudflare 対策として、API リクエスト時に User-Agent ヘッダーを自動付与します。
 
 ### Channel (NIP-28 Public Chat)
 
@@ -268,6 +285,14 @@ launchctl load ~/Library/LaunchAgents/com.nostaro.watch.plist
 # Stop and unload
 launchctl unload ~/Library/LaunchAgents/com.nostaro.watch.plist
 ```
+
+---
+
+## Dependencies
+
+| Feature | Requirement |
+|---------|-------------|
+| Zap | Coinos API トークン（必須）または Cashu CLI（オプション） |
 
 ---
 
