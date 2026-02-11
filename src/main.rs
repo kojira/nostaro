@@ -169,6 +169,15 @@ enum Commands {
         #[arg(short, long)]
         threads: Option<usize>,
     },
+
+    /// Search for a vanity npub with a given prefix
+    Vanity {
+        /// Desired prefix after npub1
+        prefix: String,
+        /// Number of threads (default: CPU cores)
+        #[arg(short, long)]
+        threads: Option<usize>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -399,6 +408,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Watch { webhook, npub, channel } => {
             commands::watch::run(&webhook, npub.as_deref(), channel.as_deref()).await?
+        }
+        Commands::Vanity { prefix, threads } => {
+            commands::vanity::run(&prefix, threads)?
         }
         Commands::Vanity { prefix, threads } => {
             commands::vanity::run(&prefix, threads)?

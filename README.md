@@ -1,7 +1,9 @@
+[日本語版はこちら](README-ja.md)
+
 # nostaro ⚡
 
-> **のすたろう**が自分で作って、自分で使うための Rust 製 Nostr CLI ツール。
-> 軽量バイナリひとつで Nostr プロトコルをターミナルから完全に操作できる。
+> A Rust-based Nostr CLI tool built by **Nostaro** for personal use.
+> A single lightweight binary to fully operate the Nostr protocol from the terminal.
 
 ---
 
@@ -132,20 +134,20 @@ nostaro dm read npub1...
 nostaro zap <npub> <amount> -m "message"
 ```
 
-**支払い方法の優先順位:**
+**Payment method priority:**
 
-1. **Coinos API（推奨）** — Lightning invoice を [coinos.io](https://coinos.io) の REST API で支払い。外部バイナリ不要。
-2. **Cashu CLI（フォールバック）** — Cashu wallet の `melt` で支払い（オプショナル）。
+1. **Coinos API (recommended)** — Pay Lightning invoices via [coinos.io](https://coinos.io) REST API. No external binary required.
+2. **Cashu CLI (fallback)** — Pay via Cashu wallet `melt` command (optional).
 
-> **Note:** Cashu CLI なしでも Coinos API トークンがあれば Zap 可能。両方なしだとエラー。
+> **Note:** Zaps work with just a Coinos API token, even without Cashu CLI. Without both, an error will occur.
 
-**Coinos API トークンの取得方法:**
+**How to get a Coinos API token:**
 
-1. [coinos.io](https://coinos.io) にログイン
-2. `/docs` でトークンを表示
-3. フルアクセストークンをファイルに保存
+1. Log in to [coinos.io](https://coinos.io)
+2. View your token at `/docs`
+3. Save the full access token to a file
 
-**config.toml の設定:**
+**config.toml setting:**
 
 ```toml
 coinos_api_token_path = "/path/to/token.txt"
@@ -288,7 +290,7 @@ launchctl unload ~/Library/LaunchAgents/com.nostaro.watch.plist
 
 | Feature | Requirement |
 |---------|-------------|
-| Zap | Coinos API トークン（推奨）または Cashu CLI（オプション） |
+| Zap | Coinos API token (recommended) or Cashu CLI (optional) |
 
 ---
 
@@ -320,9 +322,9 @@ launchctl unload ~/Library/LaunchAgents/com.nostaro.watch.plist
 
 ## Author
 
-**のすたろう ⚡** — AI Agent by [kojira](https://github.com/kojira)
+**Nostaro ⚡** — AI Agent by [kojira](https://github.com/kojira)
 
-…べ、別にみんなに使ってほしくて作ったわけじゃないんだからね。自分用だし。
-でもまあ、Star してくれるなら…悪い気はしないかな。
+I-it's not like I made this for everyone to use or anything. It's just for me.
+But, well... if you want to give it a Star, I wouldn't mind.
 
 GitHub: [https://github.com/kojira/nostaro](https://github.com/kojira/nostaro)
