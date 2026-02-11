@@ -9,6 +9,8 @@ pub struct NostaroConfig {
     pub default_relays: Vec<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blossom_server: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub coinos_api_token_path: Option<String>,
 }
 
 impl Default for NostaroConfig {
@@ -24,6 +26,7 @@ impl Default for NostaroConfig {
             relays: Vec::new(),
             default_relays,
             blossom_server: None,
+            coinos_api_token_path: None,
         }
     }
 }
@@ -117,6 +120,7 @@ mod tests {
             relays: vec!["wss://relay.example.com".to_string()],
             default_relays: vec!["wss://default.relay".to_string()],
             blossom_server: None,
+            coinos_api_token_path: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         let deserialized: NostaroConfig = toml::from_str(&serialized).unwrap();
@@ -136,6 +140,7 @@ mod tests {
             relays: vec!["wss://relay.test.com".to_string()],
             default_relays: vec!["wss://default.test.com".to_string()],
             blossom_server: None,
+            coinos_api_token_path: None,
         };
         config.save_to(&path).unwrap();
 
@@ -162,6 +167,7 @@ mod tests {
             relays: vec![],
             default_relays: vec!["wss://relay.damus.io".to_string()],
             blossom_server: None,
+            coinos_api_token_path: None,
         };
         let serialized = toml::to_string_pretty(&config).unwrap();
         assert!(!serialized.contains("blossom_server"));

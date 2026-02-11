@@ -22,7 +22,7 @@ pub async fn run(query: &str, limit: usize) -> Result<()> {
 
     for event in &events {
         let npub = event.pubkey.to_bech32()?;
-        let short_npub = &npub[..12.min(npub.len())];
+        let short_npub = &npub;
         let timestamp = event.created_at.as_u64() as i64;
         let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())

@@ -74,7 +74,7 @@ pub async fn run(limit: usize) -> Result<()> {
 
     for event in &all_events {
         let npub = event.pubkey.to_bech32()?;
-        let short_npub = &npub[..12.min(npub.len())];
+        let short_npub = &npub;
         let is_following = following_set.contains(&event.pubkey);
         let is_self = event.pubkey == keys.public_key();
 

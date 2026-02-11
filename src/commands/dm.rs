@@ -23,7 +23,7 @@ pub async fn send(npub_str: &str, message: &str, use_nip04: bool) -> Result<()> 
     }
 
     let npub = receiver.to_bech32()?;
-    println!("DM sent to {}!", &npub[..12.min(npub.len())]);
+    println!("DM sent to {}!", &npub);
 
     Ok(())
 }
@@ -62,7 +62,7 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
                 }
 
                 let sender_npub = unwrapped.sender.to_bech32()?;
-                let short_sender = &sender_npub[..12.min(sender_npub.len())];
+                let short_sender = &sender_npub;
                 let timestamp = unwrapped.rumor.created_at.as_u64() as i64;
                 let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0)
                     .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
@@ -107,7 +107,7 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
             match nostr_sdk::nips::nip04::decrypt(keys.secret_key(), &other_pk, &dm.content) {
                 Ok(decrypted_content) => {
                     let other_npub = other_pk.to_bech32()?;
-                    let short_other = &other_npub[..12.min(other_npub.len())];
+                    let short_other = &other_npub;
                     let timestamp = dm.created_at.as_u64() as i64;
                     let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0)
                         .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())

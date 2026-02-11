@@ -114,7 +114,7 @@ pub async fn read(channel_id_str: &str) -> Result<()> {
 
     for msg in &messages {
         let npub = msg.pubkey.to_bech32()?;
-        let short_npub = &npub[..12.min(npub.len())];
+        let short_npub = &npub;
         let timestamp = msg.created_at.as_u64() as i64;
         let datetime = DateTime::<Utc>::from_timestamp(timestamp, 0)
             .map(|dt| dt.format("%H:%M:%S").to_string())

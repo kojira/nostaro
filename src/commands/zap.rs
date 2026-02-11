@@ -94,21 +94,81 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
 
     let target_npub = target_pubkey.to_bech32()?;
 
-    println!("Paying invoice via Cashu...");
-    let output = Command::new("/Users/kojira/.openclaw/workspace/data/cashu-venv/bin/cashu")
-        .args(["-h", "https://mint.coinos.io", "pay", &invoice_resp.pr, "-y"])
-        .output()?;
+    // Try Coinos API first, fall back to Cashu
+    let coinos_token_path = config
+        .coinos_api_token_path
+        .clone()
+        .unwrap_or_else(|| "/Users/kojira/.openclaw/workspace/data/secrets/coinos_api_token.txt".to_string());
 
-    if output.status.success() {
+    let mut paid = false;
+
+    if let Ok(token) = std::fs::read_to_string(&coinos_token_path) {
+        let token = token.trim().to_string();
+        if !token.is_empty() {
+            println!("Paying invoice via Coinos API...");
+            let coinos_body = serde_json::json!({ "payreq": &invoice_resp.pr });
+            let coinos_resp = http_client
+                .post("https://coinos.io/api/payments")
+                .header("Authorization", format!("Bearer {}", token))
+                .header("Content-Type", "application/json")
+                .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+                .json(&coinos_body)
+                .send()
+                .await;
+
+            match coinos_resp {
+                Ok(resp) if resp.status().is_success() => {
+                    paid = true;
+                }
+                Ok(resp) => {
+                    let status = resp.status();
+                    let body = resp.text().await.unwrap_or_default();
+                    eprintln!("Coinos API failed ({}): {}. Falling back to Cashu...", status, body);
+                }
+                Err(e) => {
+                    eprintln!("Coinos API error: {}. Falling back to Cashu...", e);
+                }
+            }
+        }
+    }
+
+    if !paid {
+        let cashu_path = "/Users/kojira/.openclaw/workspace/data/cashu-venv/bin/cashu";
+        match Command::new(cashu_path)
+            .args(["-h", "https://mint.coinos.io", "pay", &invoice_resp.pr, "-y"])
+            .output()
+        {
+            Ok(output) if output.status.success() => {
+                paid = true;
+            }
+            Ok(output) => {
+                let stdout = String::from_utf8_lossy(&output.stdout);
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                eprintln!("Cashu payment failed:\n{}{}", stdout, stderr);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                eprintln!("Cashu CLI not found at {}", cashu_path);
+            }
+            Err(e) => {
+                eprintln!("Cashu CLI error: {}", e);
+            }
+        }
+    }
+
+    if !paid {
+        bail!(
+            "No payment method available.\n\
+             Set up Coinos API token (recommended) or install Cashu CLI.\n\
+             See README for configuration details."
+        );
+    }
+
+    if paid {
         println!(
             "⚡ Zap sent successfully! {} sats to {}",
             amount,
-            &target_npub[..12.min(target_npub.len())]
+            &target_npub
         );
-    } else {
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("Cashu payment failed:\n{}{}", stdout, stderr);
     }
 
     Ok(())

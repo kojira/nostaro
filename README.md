@@ -126,34 +126,30 @@ nostaro dm read
 nostaro dm read npub1...
 ```
 
-### Zap (Lightning)
-
-Send zaps via NIP-57. Requires the target profile to have a Lightning address (`lud06`/`lud16`).
+### Zap (NIP-57)
 
 ```bash
 nostaro zap <npub> <amount> -m "message"
 ```
 
-**Payment Methods (priority order):**
+**支払い方法の優先順位:**
 
-1. **Coinos API（推奨）** — Lightning invoice を [Coinos.io](https://coinos.io) の REST API で支払います。外部バイナリ不要。
-2. **Cashu CLI（フォールバック・オプション）** — Cashu wallet の `melt` コマンドで支払います。Coinos API トークンが未設定の場合のみ使用されます。
+1. **Coinos API（推奨）** — Lightning invoice を [coinos.io](https://coinos.io) の REST API で支払い。外部バイナリ不要。
+2. **Cashu CLI（フォールバック）** — Cashu wallet の `melt` で支払い（オプショナル）。
 
-> **Note:** Cashu CLI がなくても、Coinos API トークンがあれば Zap は動作します。
-> 両方とも未設定の場合はエラーになります。
+> **Note:** Cashu CLI なしでも Coinos API トークンがあれば Zap 可能。両方なしだとエラー。
 
-**Coinos API Setup:**
+**Coinos API トークンの取得方法:**
 
-1. [https://coinos.io](https://coinos.io) にログイン
-2. [https://coinos.io/docs](https://coinos.io/docs) にアクセスするとトークンが表示される
-3. フルアクセストークンをファイルに保存（例: `~/.nostaro/coinos_api_token.txt`）
-4. `config.toml` にパスを設定:
+1. [coinos.io](https://coinos.io) にログイン
+2. `/docs` でトークンを表示
+3. フルアクセストークンをファイルに保存
+
+**config.toml の設定:**
 
 ```toml
-coinos_api_token_path = "/path/to/coinos_api_token.txt"
+coinos_api_token_path = "/path/to/token.txt"
 ```
-
-> **Note:** Cloudflare 対策として、API リクエスト時に User-Agent ヘッダーを自動付与します。
 
 ### Channel (NIP-28 Public Chat)
 
@@ -292,7 +288,7 @@ launchctl unload ~/Library/LaunchAgents/com.nostaro.watch.plist
 
 | Feature | Requirement |
 |---------|-------------|
-| Zap | Coinos API トークン（必須）または Cashu CLI（オプション） |
+| Zap | Coinos API トークン（推奨）または Cashu CLI（オプション） |
 
 ---
 
