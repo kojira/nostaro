@@ -21,5 +21,6 @@ pub async fn run(note_id: &str, message: &str) -> Result<()> {
     client::reply_note(&nostr_client, &target_event, message).await?;
     println!("Reply published successfully!");
 
+    nostr_client.disconnect().await;
     Ok(())
 }

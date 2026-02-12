@@ -24,6 +24,7 @@ pub async fn create(name: &str, about: Option<&str>, picture: Option<&str>) -> R
     let event_id = client::create_channel(&nostr_client, &content).await?;
     println!("Channel created! ID: {}", event_id.to_hex());
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -58,6 +59,7 @@ pub async fn edit(
     client::edit_channel(&nostr_client, &channel_id, &content, &relay_url).await?;
     println!("Channel metadata updated!");
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -71,6 +73,7 @@ pub async fn list() -> Result<()> {
 
     if channels.is_empty() {
         println!("No channels found.");
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -94,6 +97,7 @@ pub async fn list() -> Result<()> {
     }
 
     println!("\n{} channel(s) found.", channels.len());
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -124,6 +128,7 @@ pub async fn read(channel_id_str: &str) -> Result<()> {
     }
 
     println!("\n{} message(s).", messages.len());
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -138,5 +143,6 @@ pub async fn post(channel_id_str: &str, message: &str) -> Result<()> {
     client::post_channel_message(&nostr_client, &channel_id, message).await?;
     println!("Message posted successfully!");
 
+    nostr_client.disconnect().await;
     Ok(())
 }

@@ -17,6 +17,9 @@ enum Commands {
     Post {
         /// The message to post
         message: String,
+        /// Quote repost: nevent1 or note1 to quote
+        #[arg(long)]
+        quote: Option<String>,
     },
 
     /// Reply to a note (kind:1 with e/p tags)
@@ -161,13 +164,16 @@ enum Commands {
         content: String,
     },
 
-    /// Search for a vanity npub with a given prefix
-    Vanity {
-        /// Desired prefix after npub1
-        prefix: String,
-        /// Number of threads (default: CPU cores)
-        #[arg(short, long)]
-        threads: Option<usize>,
+    /// Decode a Nostr bech32 entity (npub, nsec, note, nprofile, nevent, naddr)
+    Decode {
+        /// The bech32-encoded entity to decode
+        entity: String,
+    },
+
+    /// Get an event by ID, note1, or nevent1
+    Get {
+        /// Event ID, note1, or nevent1 bech32 string
+        event_id: String,
     },
 
     /// Search for a vanity npub with a given prefix
@@ -313,7 +319,7 @@ async fn main() -> anyhow::Result<()> {
 
     match cli.command {
         Commands::Init => commands::init::run().await?,
-        Commands::Post { message } => commands::post::run(&message).await?,
+        Commands::Post { message, quote } => commands::post::run(&message, quote.as_deref()).await?,
         Commands::Reply { note_id, message } => {
             commands::reply::run(&note_id, &message).await?
         }
@@ -409,9 +415,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Watch { webhook, npub, channel } => {
             commands::watch::run(&webhook, npub.as_deref(), channel.as_deref()).await?
         }
-        Commands::Vanity { prefix, threads } => {
-            commands::vanity::run(&prefix, threads)?
-        }
+        Commands::Decode { entity } => commands::decode::run(&entity)?,
+        Commands::Get { event_id } => commands::get::run(&event_id).await?,
         Commands::Vanity { prefix, threads } => {
             commands::vanity::run(&prefix, threads)?
         }

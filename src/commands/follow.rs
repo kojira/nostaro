@@ -17,6 +17,7 @@ pub async fn follow(pubkey_str: &str) -> Result<()> {
 
     if contacts.contains(&pubkey) {
         println!("Already following {}", pubkey.to_bech32()?);
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -25,6 +26,7 @@ pub async fn follow(pubkey_str: &str) -> Result<()> {
     client::publish_contact_list(&nostr_client, &contacts).await?;
     println!("Now following {}", pubkey.to_bech32()?);
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -39,6 +41,7 @@ pub async fn unfollow(pubkey_str: &str) -> Result<()> {
 
     if !contacts.contains(&pubkey) {
         println!("Not following {}", pubkey.to_bech32()?);
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -47,6 +50,7 @@ pub async fn unfollow(pubkey_str: &str) -> Result<()> {
     client::publish_contact_list(&nostr_client, &contacts).await?;
     println!("Unfollowed {}", pubkey.to_bech32()?);
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -68,6 +72,7 @@ pub async fn following(npub_str: Option<&str>) -> Result<()> {
         } else {
             println!("You're not following anyone yet.");
         }
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -82,6 +87,7 @@ pub async fn following(npub_str: Option<&str>) -> Result<()> {
         }
     }
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -103,6 +109,7 @@ pub async fn followers(npub_str: Option<&str>) -> Result<()> {
         } else {
             println!("No followers found.");
         }
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -117,5 +124,6 @@ pub async fn followers(npub_str: Option<&str>) -> Result<()> {
         }
     }
 
+    nostr_client.disconnect().await;
     Ok(())
 }

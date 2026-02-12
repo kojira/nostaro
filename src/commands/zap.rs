@@ -171,6 +171,7 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
         );
     }
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 

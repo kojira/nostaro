@@ -25,6 +25,7 @@ pub async fn send(npub_str: &str, message: &str, use_nip04: bool) -> Result<()> 
     let npub = receiver.to_bech32()?;
     println!("DM sent to {}!", &npub);
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -46,6 +47,7 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
 
     if gift_wraps.is_empty() && nip04_dms.is_empty() {
         println!("No direct messages found.");
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -135,5 +137,6 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
         println!("\n{} message(s).", count);
     }
 
+    nostr_client.disconnect().await;
     Ok(())
 }

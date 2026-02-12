@@ -35,5 +35,6 @@ pub async fn run(event_id_str: &str, reaction: &str) -> Result<()> {
         &event_id.to_hex()[..8]
     );
 
+    nostr_client.disconnect().await;
     Ok(())
 }

@@ -24,5 +24,6 @@ pub async fn run(kind: u16, tags: Vec<String>, content: &str) -> Result<()> {
     let output = nostr_client.send_event_builder(builder).await?;
     println!("Event published! ID: {}", output.id().to_hex());
 
+    nostr_client.disconnect().await;
     Ok(())
 }

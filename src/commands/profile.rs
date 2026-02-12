@@ -66,6 +66,7 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
     let nprofile = Nip19Profile::new(pubkey, Vec::<String>::new())?;
     println!("Nprofile:     {}", nprofile.to_bech32()?);
 
+    nostr_client.disconnect().await;
     Ok(())
 }
 
@@ -136,5 +137,6 @@ pub async fn set(
     client::set_metadata(&nostr_client, &metadata).await?;
     println!("Profile updated successfully!");
 
+    nostr_client.disconnect().await;
     Ok(())
 }

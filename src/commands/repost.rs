@@ -21,5 +21,6 @@ pub async fn run(note_id: &str) -> Result<()> {
     client::repost_event(&nostr_client, &target_event).await?;
     println!("Reposted successfully!");
 
+    nostr_client.disconnect().await;
     Ok(())
 }

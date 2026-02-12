@@ -69,6 +69,7 @@ pub async fn run(limit: usize) -> Result<()> {
 
     if all_events.is_empty() {
         println!("No notes found.");
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -100,5 +101,6 @@ pub async fn run(limit: usize) -> Result<()> {
 
     println!("\nShowing {} note(s).", all_events.len());
 
+    nostr_client.disconnect().await;
     Ok(())
 }

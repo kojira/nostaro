@@ -17,6 +17,7 @@ pub async fn run(query: &str, limit: usize) -> Result<()> {
 
     if events.is_empty() {
         println!("No notes found matching \"{}\".", query);
+        nostr_client.disconnect().await;
         return Ok(());
     }
 
@@ -37,5 +38,6 @@ pub async fn run(query: &str, limit: usize) -> Result<()> {
 
     println!("\nFound {} note(s).", events.len());
 
+    nostr_client.disconnect().await;
     Ok(())
 }
