@@ -1,14 +1,50 @@
 use anyhow::Result;
 use chrono::{DateTime, Utc};
 use nostr_sdk::prelude::*;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use crate::cache::CacheDb;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
 
-pub async fn run(limit: usize) -> Result<()> {
+async fn fetch_reactions(
+    nostr_client: &Client,
+    event_ids: Vec<EventId>,
+) -> Result<HashMap<EventId, Vec<Event>>> {
+    let filter = Filter::new()
+        .kind(Kind::Reaction)
+        .events(event_ids)
+        .limit(1000);
+    let reaction_events = nostr_client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await?;
+
+    let mut reactions_by_event: HashMap<EventId, Vec<Event>> = HashMap::new();
+
+    for reaction in reaction_events {
+        let related_event_ids: Vec<EventId> = reaction
+            .tags
+            .iter()
+            .filter_map(|tag: &Tag| match tag.as_standardized() {
+                Some(TagStandard::Event { event_id, .. }) => Some(*event_id),
+                _ => None,
+            })
+            .collect();
+
+        for event_id in related_event_ids {
+            reactions_by_event
+                .entry(event_id)
+                .or_default()
+                .push(reaction.clone());
+        }
+    }
+
+    Ok(reactions_by_event)
+}
+
+pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
@@ -50,6 +86,13 @@ pub async fn run(limit: usize) -> Result<()> {
     });
 
     all_events.truncate(limit);
+
+    let reactions_by_event = if with_reactions {
+        let event_ids: Vec<EventId> = all_events.iter().map(|e| e.id).collect();
+        fetch_reactions(&nostr_client, event_ids).await?
+    } else {
+        HashMap::new()
+    };
 
     // Cache events
     if let Ok(cache) = CacheDb::open() {
@@ -96,6 +139,42 @@ pub async fn run(limit: usize) -> Result<()> {
         println!("[{}]{} {}", short_npub, label, datetime);
         println!("{}", event.content);
         println!("  id: {}", note_id);
+
+        if with_reactions {
+            if let Some(reactions) = reactions_by_event.get(&event.id) {
+                let mut counts: HashMap<String, usize> = HashMap::new();
+
+                for reaction in reactions {
+                    let emoji = if reaction.content.is_empty() {
+                        "+".to_string()
+                    } else {
+                        reaction.content.clone()
+                    };
+                    *counts.entry(emoji).or_insert(0) += 1;
+                }
+
+                if !counts.is_empty() {
+                    let own_pubkey = keys.public_key();
+                    let mut parts = Vec::new();
+
+                    for (emoji, count) in &counts {
+                        let you_reacted = reactions.iter().any(|reaction| {
+                            let reaction_emoji = if reaction.content.is_empty() {
+                                "+"
+                            } else {
+                                reaction.content.as_str()
+                            };
+                            reaction.pubkey == own_pubkey && reaction_emoji == *emoji
+                        });
+                        let suffix = if you_reacted { " (you reacted)" } else { "" };
+                        parts.push(format!("{} x{}{}", emoji, count, suffix));
+                    }
+
+                    println!("  Reactions: {}", parts.join(", "));
+                }
+            }
+        }
+
         println!("{}", "-".repeat(60));
     }
 

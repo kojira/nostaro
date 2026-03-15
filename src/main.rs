@@ -41,6 +41,9 @@ enum Commands {
         /// Maximum number of notes to fetch
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
+        /// Show reactions for each note
+        #[arg(long)]
+        with_reactions: bool,
     },
 
     /// Search notes (NIP-50)
@@ -324,7 +327,10 @@ async fn main() -> anyhow::Result<()> {
             commands::reply::run(&note_id, &message).await?
         }
         Commands::Repost { note_id } => commands::repost::run(&note_id).await?,
-        Commands::Timeline { limit } => commands::timeline::run(limit).await?,
+        Commands::Timeline {
+            limit,
+            with_reactions,
+        } => commands::timeline::run(limit, with_reactions).await?,
         Commands::Search { query, limit } => commands::search::run(&query, limit).await?,
         Commands::Profile { action } => match action {
             ProfileAction::Show { pubkey } => {
