@@ -93,6 +93,7 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
     } else {
         HashMap::new()
     };
+    let cache = CacheDb::open().ok();
 
     // Cache events
     if let Ok(cache) = CacheDb::open() {
@@ -142,7 +143,8 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
 
         if with_reactions {
             if let Some(reactions) = reactions_by_event.get(&event.id) {
-                let mut counts: HashMap<String, usize> = HashMap::new();
+                let own_pubkey = keys.public_key();
+                let mut counts: HashMap<String, (usize, Vec<String>)> = HashMap::new();
 
                 for reaction in reactions {
                     let emoji = if reaction.content.is_empty() {
@@ -150,24 +152,30 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
                     } else {
                         reaction.content.clone()
                     };
-                    *counts.entry(emoji).or_insert(0) += 1;
+                    let reactor_npub = reaction.pubkey.to_bech32().unwrap_or_default();
+                    let reactor_name = if reaction.pubkey == own_pubkey {
+                        format!("you({})", reactor_npub)
+                    } else {
+                        let display_name = cache
+                            .as_ref()
+                            .and_then(|cache| cache.get_profile(&reaction.pubkey.to_hex()).ok().flatten())
+                            .and_then(|profile| profile.display_name.or(profile.name))
+                            .filter(|name| !name.is_empty());
+                        match display_name {
+                            Some(name) => format!("{}({})", name, reactor_npub),
+                            None => reactor_npub,
+                        }
+                    };
+                    let entry = counts.entry(emoji).or_insert_with(|| (0, Vec::new()));
+                    entry.0 += 1;
+                    entry.1.push(reactor_name);
                 }
 
                 if !counts.is_empty() {
-                    let own_pubkey = keys.public_key();
                     let mut parts = Vec::new();
 
-                    for (emoji, count) in &counts {
-                        let you_reacted = reactions.iter().any(|reaction| {
-                            let reaction_emoji = if reaction.content.is_empty() {
-                                "+"
-                            } else {
-                                reaction.content.as_str()
-                            };
-                            reaction.pubkey == own_pubkey && reaction_emoji == *emoji
-                        });
-                        let suffix = if you_reacted { " (you reacted)" } else { "" };
-                        parts.push(format!("{} x{}{}", emoji, count, suffix));
+                    for (emoji, (count, names)) in &counts {
+                        parts.push(format!("{} x{} ({})", emoji, count, names.join(", ")));
                     }
 
                     println!("  Reactions: {}", parts.join(", "));
