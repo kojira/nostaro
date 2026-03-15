@@ -44,6 +44,50 @@ async fn fetch_reactions(
     Ok(reactions_by_event)
 }
 
+async fn fetch_and_cache_profiles(
+    nostr_client: &Client,
+    pubkeys: Vec<PublicKey>,
+    cache: &CacheDb,
+) -> Result<()> {
+    let missing_pubkeys: Vec<PublicKey> = pubkeys
+        .into_iter()
+        .filter(|pk| {
+            cache
+                .get_profile(&pk.to_hex())
+                .ok()
+                .flatten()
+                .is_none()
+        })
+        .collect();
+
+    if missing_pubkeys.is_empty() {
+        return Ok(());
+    }
+
+    let filter = Filter::new()
+        .kind(Kind::Metadata)
+        .authors(missing_pubkeys)
+        .limit(500);
+
+    let events = nostr_client
+        .fetch_events(filter, Duration::from_secs(10))
+        .await?;
+
+    for event in events {
+        if let Ok(metadata) = Metadata::from_json(&event.content) {
+            let _ = cache.store_profile(
+                &event.pubkey.to_hex(),
+                metadata.name.as_deref(),
+                metadata.display_name.as_deref(),
+                metadata.about.as_deref(),
+                metadata.picture.as_ref().map(|u| u.as_str()),
+            );
+        }
+    }
+
+    Ok(())
+}
+
 pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
@@ -93,6 +137,21 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
     } else {
         HashMap::new()
     };
+
+    // Batch-fetch kind:0 profiles for reactors not yet in cache
+    if with_reactions && !reactions_by_event.is_empty() {
+        if let Ok(cache) = CacheDb::open() {
+            let all_reactor_pubkeys: Vec<PublicKey> = reactions_by_event
+                .values()
+                .flatten()
+                .map(|e| e.pubkey)
+                .collect::<HashSet<PublicKey>>()
+                .into_iter()
+                .collect();
+            let _ = fetch_and_cache_profiles(&nostr_client, all_reactor_pubkeys, &cache).await;
+        }
+    }
+
     let cache = CacheDb::open().ok();
 
     // Cache events
