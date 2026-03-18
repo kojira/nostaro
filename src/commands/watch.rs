@@ -55,17 +55,14 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
         nostr_client.subscribe(filter, None).await?;
     }
 
-    // Keyword watch mode (NIP-50 search)
+    // Keyword watch mode (local matching on existing relays)
     if !keywords.is_empty() {
-        let _ = nostr_client.add_relay("wss://search.nos.today").await;
-        nostr_client.connect().await;
-
+        // Subscribe to all kind:1 events since now; keyword matching is done locally
+        let filter = Filter::new()
+            .kind(Kind::TextNote)
+            .since(Timestamp::now());
+        nostr_client.subscribe(filter, None).await?;
         for keyword in keywords {
-            let filter = Filter::new()
-                .kind(Kind::TextNote)
-                .search(keyword)
-                .since(Timestamp::now());
-            nostr_client.subscribe(filter, None).await?;
             println!("Watching keyword: {}", keyword);
         }
     }

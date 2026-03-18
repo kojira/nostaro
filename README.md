@@ -77,10 +77,13 @@ nostaro react <note_id> "🤙"
 # View timeline (default: 20 notes)
 nostaro timeline
 nostaro timeline --limit 50
+nostaro timeline --with-reactions
 
 # Search notes (NIP-50)
 nostaro search "rust nostr" --limit 10
 ```
+
+`--with-reactions` shows reactions with reactor names fetched from the local cache.
 
 ### Profile
 
