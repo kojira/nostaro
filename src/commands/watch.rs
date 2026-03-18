@@ -137,8 +137,8 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                     }
 
                     format!(
-                        "**{}** reacted {}\nnpub: {}{}\nnote: {}",
-                        sender_name, emoji, npub_str, original_content_line, original_note_str
+                        "**{}** reacted {}\nnpub: {}{}\nnote: {}\nreaction_note: {}",
+                        sender_name, emoji, npub_str, original_content_line, original_note_str, note_id
                     )
                 }
                 _ => continue,
