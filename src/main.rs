@@ -152,6 +152,9 @@ enum Commands {
         /// NIP-28 channel ID to watch (hex)
         #[arg(long)]
         channel: Option<String>,
+        /// Keywords to watch (can be specified multiple times)
+        #[arg(long = "keyword")]
+        keywords: Vec<String>,
     },
 
     /// Post a custom kind Nostr event
@@ -418,8 +421,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Event { kind, tag, content } => {
             commands::event::run(kind, tag, &content).await?
         }
-        Commands::Watch { webhook, npub, channel } => {
-            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref()).await?
+        Commands::Watch { webhook, npub, channel, keywords } => {
+            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref(), &keywords).await?
         }
         Commands::Decode { entity } => commands::decode::run(&entity)?,
         Commands::Get { event_id } => commands::get::run(&event_id).await?,

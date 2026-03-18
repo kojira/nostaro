@@ -7,7 +7,7 @@ use crate::config::NostaroConfig;
 use crate::keys;
 use crate::utils::resolve_pubkey;
 
-pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&str>) -> Result<()> {
+pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&str>, keywords: &[String]) -> Result<()> {
     let config = NostaroConfig::load()?;
     let own_keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&own_keys, &config).await?;
@@ -55,6 +55,21 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
         nostr_client.subscribe(filter, None).await?;
     }
 
+    // Keyword watch mode (NIP-50 search)
+    if !keywords.is_empty() {
+        let _ = nostr_client.add_relay("wss://search.nos.today").await;
+        nostr_client.connect().await;
+
+        for keyword in keywords {
+            let filter = Filter::new()
+                .kind(Kind::TextNote)
+                .search(keyword)
+                .since(Timestamp::now());
+            nostr_client.subscribe(filter, None).await?;
+            println!("Watching keyword: {}", keyword);
+        }
+    }
+
     let mut profile_cache: HashMap<PublicKey, (String, Option<String>)> = HashMap::new();
     let http_client = reqwest::Client::new();
 
@@ -93,11 +108,28 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                     }
                 }
                 Kind::TextNote => {
-                    let has_e_tag = event.tags.iter().any(|t| {
-                        matches!(t.as_standardized(), Some(TagStandard::Event { .. }))
+                    let is_mention_or_reply = watching_mentions && event.tags.iter().any(|t| {
+                        matches!(t.as_standardized(), Some(TagStandard::PublicKey { public_key, .. }) if *public_key == own_pubkey)
                     });
-                    let label = if has_e_tag { "リプライ" } else { "メンション" };
-                    format!("📩 **{}** from {}\n> {}\n🔗 {}", label, sender_name, event.content, note_id)
+
+                    if is_mention_or_reply {
+                        let has_e_tag = event.tags.iter().any(|t| {
+                            matches!(t.as_standardized(), Some(TagStandard::Event { .. }))
+                        });
+                        let label = if has_e_tag { "リプライ" } else { "メンション" };
+                        format!("📩 **{}** from {}\n> {}\n🔗 {}", label, sender_name, event.content, note_id)
+                    } else if !keywords.is_empty() {
+                        let matched_keyword = keywords.iter().find(|kw| {
+                            event.content.to_lowercase().contains(&kw.to_lowercase())
+                        });
+                        if let Some(kw) = matched_keyword {
+                            format!("🔍 **keyword match: {}**\n{}\n> {}\nnote: {}", kw, sender_name, event.content, note_id)
+                        } else {
+                            continue;
+                        }
+                    } else {
+                        continue;
+                    }
                 }
                 Kind::Reaction => {
                     let emoji = if event.content.is_empty() {
