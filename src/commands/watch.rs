@@ -73,6 +73,14 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
     let mut notifications = nostr_client.notifications();
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
+            // Skip events older than 5 minutes
+            let now = chrono::Utc::now().timestamp() as u64;
+            let created_at = event.created_at.as_u64();
+            if now > created_at && now - created_at > 300 {
+                eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
+                continue;
+            }
+
             if event.pubkey == own_pubkey && event.kind != Kind::ChannelMessage {
                 continue;
             }
