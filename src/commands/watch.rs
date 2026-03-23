@@ -1,13 +1,13 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet, VecDeque};
 
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
 use crate::utils::resolve_pubkey;
 
-pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&str>, keywords: &[String]) -> Result<()> {
+pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&str>, keywords: &[String], extra_kinds: &[u16], mention_only: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let own_keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&own_keys, &config).await?;
@@ -47,12 +47,25 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
         println!("Webhook: {}", webhook_url);
         println!("Press Ctrl+C to stop.\n");
 
-        let filter = Filter::new()
-            .pubkey(target_pubkey)
-            .kinds(vec![Kind::TextNote, Kind::Reaction])
-            .since(Timestamp::now());
-
-        nostr_client.subscribe(filter, None).await?;
+        if extra_kinds.is_empty() {
+            // Default behavior: kind:1 + kind:7 with p-tag filter
+            let filter = Filter::new()
+                .pubkey(target_pubkey)
+                .kinds(vec![Kind::TextNote, Kind::Reaction])
+                .since(Timestamp::now());
+            nostr_client.subscribe(filter, None).await?;
+        } else {
+            // Custom kinds subscription
+            let kinds_vec: Vec<Kind> = extra_kinds.iter().map(|&k| Kind::from(k)).collect();
+            let mut filter = Filter::new()
+                .kinds(kinds_vec)
+                .since(Timestamp::now());
+            if mention_only {
+                filter = filter.pubkey(target_pubkey);
+            }
+            nostr_client.subscribe(filter, None).await?;
+            println!("Custom kinds: {:?}, mention_only: {}", extra_kinds, mention_only);
+        }
     }
 
     // Keyword watch mode (local matching on existing relays)
@@ -70,6 +83,13 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
     let mut profile_cache: HashMap<PublicKey, (String, Option<String>)> = HashMap::new();
     let http_client = reqwest::Client::new();
 
+    // Deduplication: track seen event IDs (capped at 1000 to avoid unbounded growth)
+    let mut seen_events: HashSet<EventId> = HashSet::new();
+    let mut seen_events_queue: VecDeque<EventId> = VecDeque::new();
+    const MAX_SEEN_EVENTS: usize = 1000;
+
+    let extra_kinds_vec: Vec<u16> = extra_kinds.to_vec();
+
     let mut notifications = nostr_client.notifications();
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
@@ -80,6 +100,19 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                 eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
                 continue;
             }
+
+            // Deduplicate: skip events we've already processed
+            if seen_events.contains(&event.id) {
+                continue;
+            }
+            // Record this event as seen
+            if seen_events.len() >= MAX_SEEN_EVENTS {
+                if let Some(oldest) = seen_events_queue.pop_front() {
+                    seen_events.remove(&oldest);
+                }
+            }
+            seen_events.insert(event.id);
+            seen_events_queue.push_back(event.id);
 
             if event.pubkey == own_pubkey && event.kind != Kind::ChannelMessage {
                 continue;
@@ -113,9 +146,11 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                     }
                 }
                 Kind::TextNote => {
-                    let is_mention_or_reply = watching_mentions && event.tags.iter().any(|t| {
-                        matches!(t.as_standardized(), Some(TagStandard::PublicKey { public_key, .. }) if *public_key == own_pubkey)
-                    });
+                    let is_mention_or_reply = watching_mentions && (
+                        !mention_only || event.tags.iter().any(|t| {
+                            matches!(t.as_standardized(), Some(TagStandard::PublicKey { public_key, .. }) if *public_key == own_pubkey)
+                        })
+                    );
 
                     if is_mention_or_reply {
                         let has_e_tag = event.tags.iter().any(|t| {
@@ -177,6 +212,57 @@ pub async fn run(webhook_url: &str, npub_str: Option<&str>, channel_id: Option<&
                         "**{}** reacted {}\nnpub: {}{}\nnote: {}\nreaction_note: {}",
                         sender_name, emoji, npub_str, original_content_line, original_note_str, note_id
                     )
+                }
+                k if k == Kind::from(9735u16) => {
+                    // Zap Receipt (NIP-57)
+                    let npub_str_val = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
+
+                    // Parse description tag for zapper info
+                    let description_json = event.tags.iter().find_map(|t| {
+                        if t.kind() == TagKind::custom("description") {
+                            t.content().map(|s| s.to_string())
+                        } else {
+                            None
+                        }
+                    });
+
+                    let (zap_message, zapper_npub) = if let Some(desc_json) = description_json {
+                        if let Ok(zap_request) = serde_json::from_str::<serde_json::Value>(&desc_json) {
+                            let content = zap_request["content"].as_str().unwrap_or("").to_string();
+                            let zapper_npub = if let Some(pk_hex) = zap_request["pubkey"].as_str() {
+                                PublicKey::from_hex(pk_hex)
+                                    .ok()
+                                    .and_then(|pk| pk.to_bech32().ok())
+                                    .unwrap_or_else(|| pk_hex.to_string())
+                            } else {
+                                npub_str_val.clone()
+                            };
+                            (content, zapper_npub)
+                        } else {
+                            (String::new(), npub_str_val.clone())
+                        }
+                    } else {
+                        (String::new(), npub_str_val.clone())
+                    };
+
+                    let has_bolt11 = event.tags.iter().any(|t| t.kind() == TagKind::custom("bolt11"));
+
+                    if has_bolt11 {
+                        if zap_message.is_empty() {
+                            format!("⚡ Zap受信！\nfrom: {}\nnote: {}", zapper_npub, note_id)
+                        } else {
+                            format!("⚡ Zap受信！\nfrom: {}\nメッセージ: {}\nnote: {}", zapper_npub, zap_message, note_id)
+                        }
+                    } else {
+                        continue;
+                    }
+                }
+                k if extra_kinds_vec.contains(&k.as_u16()) => {
+                    // Generic custom kind notification
+                    let npub_str_val = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
+                    let content_preview: String = event.content.chars().take(500).collect();
+                    let ellipsis = if event.content.chars().count() > 500 { "..." } else { "" };
+                    format!("📡 kind:{} from {}\n> {}{}\nnote: {}", k.as_u16(), npub_str_val, content_preview, ellipsis, note_id)
                 }
                 _ => continue,
             };

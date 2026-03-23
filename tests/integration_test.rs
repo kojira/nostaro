@@ -16,6 +16,7 @@ fn config_save_load_roundtrip() {
         ],
         default_relays: vec!["wss://default.example.com".to_string()],
         blossom_server: None,
+        coinos_api_token_path: None,
     };
 
     config.save_to(&path).unwrap();

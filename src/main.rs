@@ -155,6 +155,15 @@ enum Commands {
         /// Keywords to watch (can be specified multiple times)
         #[arg(long = "keyword")]
         keywords: Vec<String>,
+        /// Comma-separated event kinds to watch (e.g. --kind 1,9735,7)
+        #[arg(long = "kind", value_delimiter = ',')]
+        kinds: Vec<u16>,
+        /// Only receive events that mention (p-tag) the target pubkey (default: true)
+        #[arg(long, default_value_t = true)]
+        mention_only: bool,
+        /// Disable mention-only mode (receive all events of watched kinds)
+        #[arg(long, action = clap::ArgAction::SetFalse, overrides_with = "mention_only")]
+        no_mention_only: bool,
     },
 
     /// Post a custom kind Nostr event
@@ -421,8 +430,8 @@ async fn main() -> anyhow::Result<()> {
         Commands::Event { kind, tag, content } => {
             commands::event::run(kind, tag, &content).await?
         }
-        Commands::Watch { webhook, npub, channel, keywords } => {
-            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref(), &keywords).await?
+        Commands::Watch { webhook, npub, channel, keywords, kinds, mention_only, .. } => {
+            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref(), &keywords, &kinds, mention_only).await?
         }
         Commands::Decode { entity } => commands::decode::run(&entity)?,
         Commands::Get { event_id } => commands::get::run(&event_id).await?,
@@ -432,4 +441,20 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_kind_delimiter_parsing() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--webhook", "http://example.com", "--kind", "1,9735,7"]).unwrap();
+        if let Commands::Watch { kinds, .. } = cli.command {
+            assert_eq!(kinds, vec![1u16, 9735u16, 7u16]);
+        } else {
+            panic!("wrong command");
+        }
+    }
 }
