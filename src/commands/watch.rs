@@ -327,7 +327,9 @@ async fn send_discord_webhook(
     });
 
     if let Some(url) = avatar_url {
-        body["avatar_url"] = serde_json::Value::String(url.to_string());
+        if url.starts_with("http://") || url.starts_with("https://") {
+            body["avatar_url"] = serde_json::Value::String(url.to_string());
+        }
     }
 
     let resp = client.post(webhook_url).json(&body).send().await?;
