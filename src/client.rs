@@ -88,9 +88,15 @@ pub async fn search_notes(client: &Client, query: &str, limit: usize) -> Result<
 }
 
 pub async fn fetch_profile(client: &Client, pubkey: &PublicKey) -> Result<Option<Metadata>> {
-    let metadata = client
-        .fetch_metadata(*pubkey, Duration::from_secs(10))
-        .await?;
+    fetch_profile_with_timeout(client, pubkey, Duration::from_secs(10)).await
+}
+
+pub async fn fetch_profile_with_timeout(
+    client: &Client,
+    pubkey: &PublicKey,
+    timeout: Duration,
+) -> Result<Option<Metadata>> {
+    let metadata = client.fetch_metadata(*pubkey, timeout).await?;
     Ok(metadata)
 }
 

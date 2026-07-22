@@ -2,11 +2,71 @@ use anyhow::{bail, Result};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
+use std::time::Duration;
 
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
 use crate::utils::resolve_pubkey;
+
+/// How stale an event can be (relative to now) before watch drops it as a replay.
+const MAX_EVENT_AGE_SECS: u64 = 300;
+/// Cap on remembered event IDs before the oldest are evicted, to bound memory growth.
+const MAX_SEEN_EVENTS: usize = 1000;
+/// Timeout for the best-effort author-name lookup in JSON mode. Kept short (unlike the
+/// 10s default used elsewhere) so one slow/unresponsive relay can't stall the whole
+/// real-time event stream; author_name is optional in the output schema.
+const AUTHOR_NAME_FETCH_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Tracks recently-seen event IDs to drop duplicates/replays, and rejects events older
+/// than `MAX_EVENT_AGE_SECS` (relays sometimes replay old events on resubscribe).
+/// Shared by both the Discord-webhook loop and the `--json` loop so a fix to this logic
+/// only needs to be made once.
+struct EventDeduplicator {
+    seen: HashSet<EventId>,
+    order: VecDeque<EventId>,
+}
+
+impl EventDeduplicator {
+    fn new() -> Self {
+        Self {
+            seen: HashSet::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    /// Returns true if `event` is fresh and unseen and should be processed.
+    fn accept(&mut self, event: &Event) -> bool {
+        let now = chrono::Utc::now().timestamp() as u64;
+        let created_at = event.created_at.as_u64();
+        if now > created_at && now - created_at > MAX_EVENT_AGE_SECS {
+            eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
+            return false;
+        }
+
+        if self.seen.contains(&event.id) {
+            return false;
+        }
+        if self.seen.len() >= MAX_SEEN_EVENTS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.seen.remove(&oldest);
+            }
+        }
+        self.seen.insert(event.id);
+        self.order.push_back(event.id);
+        true
+    }
+}
+
+/// Resolve a display name from kind:0 metadata: prefer display_name, fall back to name,
+/// treating empty strings as absent. Shared by the Discord and JSON name-lookup paths.
+fn resolve_display_name(metadata: &Metadata) -> Option<String> {
+    metadata
+        .display_name
+        .clone()
+        .filter(|s| !s.is_empty())
+        .or_else(|| metadata.name.clone().filter(|s| !s.is_empty()))
+}
 
 #[allow(clippy::too_many_arguments)]
 pub async fn run(
@@ -22,6 +82,12 @@ pub async fn run(
 ) -> Result<()> {
     if !json_output && webhook_url.is_none() {
         bail!("--webhook is required unless --json is specified");
+    }
+    if json_output && channel_id.is_some() {
+        bail!("--channel is not supported together with --json");
+    }
+    if json_output && npub_str.is_some() {
+        bail!("--npub is not supported together with --json");
     }
 
     let config = NostaroConfig::load()?;
@@ -119,37 +185,14 @@ pub async fn run(
 
     let mut profile_cache: HashMap<PublicKey, (String, Option<String>)> = HashMap::new();
     let http_client = reqwest::Client::new();
-
-    // Deduplication: track seen event IDs (capped at 1000 to avoid unbounded growth)
-    let mut seen_events: HashSet<EventId> = HashSet::new();
-    let mut seen_events_queue: VecDeque<EventId> = VecDeque::new();
-    const MAX_SEEN_EVENTS: usize = 1000;
-
-    let extra_kinds_vec: Vec<u16> = extra_kinds.to_vec();
+    let mut dedup = EventDeduplicator::new();
 
     let mut notifications = nostr_client.notifications();
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
-            // Skip events older than 5 minutes
-            let now = chrono::Utc::now().timestamp() as u64;
-            let created_at = event.created_at.as_u64();
-            if now > created_at && now - created_at > 300 {
-                eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
+            if !dedup.accept(&event) {
                 continue;
             }
-
-            // Deduplicate: skip events we've already processed
-            if seen_events.contains(&event.id) {
-                continue;
-            }
-            // Record this event as seen
-            if seen_events.len() >= MAX_SEEN_EVENTS {
-                if let Some(oldest) = seen_events_queue.pop_front() {
-                    seen_events.remove(&oldest);
-                }
-            }
-            seen_events.insert(event.id);
-            seen_events_queue.push_back(event.id);
 
             if !author_pubkeys.is_empty() && !author_pubkeys.contains(&event.pubkey) {
                 continue;
@@ -298,7 +341,7 @@ pub async fn run(
                         continue;
                     }
                 }
-                k if extra_kinds_vec.contains(&k.as_u16()) => {
+                k if extra_kinds.contains(&k.as_u16()) => {
                     // Generic custom kind notification
                     let npub_str_val = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
                     let content_preview: String = event.content.chars().take(500).collect();
@@ -333,7 +376,7 @@ struct JsonEvent {
     created_at: u64,
     kind: u16,
     content: String,
-    tags: Vec<Vec<String>>,
+    tags: Tags,
 }
 
 /// Generic, output-agnostic watch loop for consumers like OpenCrab: subscribes to the
@@ -367,32 +410,15 @@ async fn watch_json(
     }
     nostr_client.subscribe(filter, None).await?;
 
-    let mut seen_events: HashSet<EventId> = HashSet::new();
-    let mut seen_events_queue: VecDeque<EventId> = VecDeque::new();
-    const MAX_SEEN_EVENTS: usize = 1000;
-
+    let mut dedup = EventDeduplicator::new();
     let mut author_name_cache: HashMap<PublicKey, Option<String>> = HashMap::new();
 
     let mut notifications = nostr_client.notifications();
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
-            let now = chrono::Utc::now().timestamp() as u64;
-            let created_at = event.created_at.as_u64();
-            if now > created_at && now - created_at > 300 {
-                eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
+            if !dedup.accept(&event) {
                 continue;
             }
-
-            if seen_events.contains(&event.id) {
-                continue;
-            }
-            if seen_events.len() >= MAX_SEEN_EVENTS {
-                if let Some(oldest) = seen_events_queue.pop_front() {
-                    seen_events.remove(&oldest);
-                }
-            }
-            seen_events.insert(event.id);
-            seen_events_queue.push_back(event.id);
 
             if !author_pubkeys.is_empty() && !author_pubkeys.contains(&event.pubkey) {
                 continue;
@@ -423,7 +449,6 @@ async fn build_json_event(
     author_name_cache: &mut HashMap<PublicKey, Option<String>>,
 ) -> Result<String> {
     let author_name = get_author_name(nostr_client, &event.pubkey, author_name_cache).await;
-    let tags: Vec<Vec<String>> = event.tags.iter().map(|t| t.as_slice().to_vec()).collect();
 
     let json_event = JsonEvent {
         id: event.id.to_hex(),
@@ -434,7 +459,7 @@ async fn build_json_event(
         created_at: event.created_at.as_u64(),
         kind: event.kind.as_u16(),
         content: event.content.clone(),
-        tags,
+        tags: event.tags.clone(),
     };
 
     Ok(serde_json::to_string(&json_event)?)
@@ -449,11 +474,8 @@ async fn get_author_name(
         return name.clone();
     }
 
-    let name = match client::fetch_profile(nostr_client, pubkey).await {
-        Ok(Some(metadata)) => metadata
-            .display_name
-            .filter(|s| !s.is_empty())
-            .or_else(|| metadata.name.filter(|s| !s.is_empty())),
+    let name = match client::fetch_profile_with_timeout(nostr_client, pubkey, AUTHOR_NAME_FETCH_TIMEOUT).await {
+        Ok(Some(metadata)) => resolve_display_name(&metadata),
         _ => None,
     };
 
@@ -474,13 +496,7 @@ async fn get_profile_info(
 
     let info = match client::fetch_profile(nostr_client, pubkey).await {
         Ok(Some(metadata)) => {
-            let display = if let Some(ref dn) = metadata.display_name {
-                if !dn.is_empty() { dn.clone() } else if let Some(ref name) = metadata.name { name.clone() } else { npub.clone() }
-            } else if let Some(ref name) = metadata.name {
-                if !name.is_empty() { name.clone() } else { npub.clone() }
-            } else {
-                npub.clone()
-            };
+            let display = resolve_display_name(&metadata).unwrap_or_else(|| npub.clone());
             let picture = metadata.picture.map(|u| u.to_string()).filter(|s| !s.is_empty());
             (display, picture)
         }
