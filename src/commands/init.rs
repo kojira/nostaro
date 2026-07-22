@@ -45,7 +45,10 @@ pub async fn run() -> Result<()> {
 
     config.save()?;
 
-    println!("\nConfiguration saved to ~/.nostaro/config.toml");
+    println!(
+        "\nConfiguration saved to {}",
+        NostaroConfig::config_path().display()
+    );
     println!("Default relays have been configured.");
     println!("\nYou're all set! Try posting with: nostaro post \"Hello Nostr!\"");
 

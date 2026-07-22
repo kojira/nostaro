@@ -8,6 +8,7 @@ pub mod get;
 pub mod init;
 pub mod post;
 pub mod profile;
+pub mod pubkey;
 pub mod react;
 pub mod relay;
 pub mod reply;
