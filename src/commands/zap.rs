@@ -182,7 +182,7 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     if paid {
         println!(
             "⚡ Zap sent successfully! {} sats to {}",
-            amount, &target_npub
+            amount, target_npub
         );
     }
 

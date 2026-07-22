@@ -143,7 +143,7 @@ pub async fn run(
         };
 
         let target_npub = target_pubkey.to_bech32()?;
-        println!("Watching for events targeting {}...", &target_npub);
+        println!("Watching for events targeting {}...", target_npub);
         println!("Webhook: {}", webhook_url);
         println!("Press Ctrl+C to stop.\n");
 

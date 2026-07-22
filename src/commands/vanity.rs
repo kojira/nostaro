@@ -49,7 +49,7 @@ pub fn run(prefix: &str, threads: Option<usize>) -> Result<()> {
         }
         let count = counter_progress.load(Ordering::Relaxed);
         let elapsed = start.elapsed().as_secs();
-        let rate = if elapsed > 0 { count / elapsed } else { count };
+        let rate = count.checked_div(elapsed).unwrap_or(count);
         eprintln!(
             "Tried: {} keys | Elapsed: {}s | Rate: {} keys/s",
             count, elapsed, rate

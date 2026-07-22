@@ -51,7 +51,7 @@ pub async fn fetch_timeline(client: &Client, limit: usize) -> Result<Vec<Event>>
     let filter = Filter::new().kind(Kind::TextNote).limit(limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
-    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     Ok(events)
 }
 
@@ -66,7 +66,7 @@ pub async fn fetch_timeline_for_authors(
         .limit(limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
-    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     Ok(events)
 }
 
@@ -77,7 +77,7 @@ pub async fn search_notes(client: &Client, query: &str, limit: usize) -> Result<
         .limit(limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
-    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     Ok(events)
 }
 
@@ -229,15 +229,15 @@ pub async fn fetch_nip04_dms(
     let sent = client
         .fetch_events(filter_sent, Duration::from_secs(10))
         .await?;
-    all_events.extend(sent.into_iter());
+    all_events.extend(sent);
 
     let received = client
         .fetch_events(filter_received, Duration::from_secs(10))
         .await?;
-    all_events.extend(received.into_iter());
+    all_events.extend(received);
 
     // Remove duplicates and sort by timestamp
-    all_events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    all_events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     all_events.dedup_by(|a, b| a.id == b.id);
 
     Ok(all_events)
@@ -247,7 +247,7 @@ pub async fn fetch_channels(client: &Client, limit: usize) -> Result<Vec<Event>>
     let filter = Filter::new().kind(Kind::ChannelCreation).limit(limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
-    events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     Ok(events)
 }
 
@@ -262,7 +262,7 @@ pub async fn fetch_channel_messages(
         .limit(limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
-    events.sort_by(|a, b| a.created_at.cmp(&b.created_at));
+    events.sort_by_key(|e| e.created_at);
     Ok(events)
 }
 

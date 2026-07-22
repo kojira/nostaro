@@ -23,7 +23,7 @@ pub async fn send(npub_str: &str, message: &str, use_nip04: bool) -> Result<()> 
     }
 
     let npub = receiver.to_bech32()?;
-    println!("DM sent to {}!", &npub);
+    println!("DM sent to {}!", npub);
 
     nostr_client.disconnect().await;
     Ok(())

@@ -18,7 +18,7 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
     };
 
     let npub = pubkey.to_bech32()?;
-    println!("Fetching profile for {}...\n", &npub);
+    println!("Fetching profile for {}...\n", npub);
 
     let metadata = client::fetch_profile(&nostr_client, &pubkey).await?;
 
