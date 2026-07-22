@@ -115,8 +115,12 @@ async fn upload_nip96(
     let http_client = reqwest::Client::new();
 
     let well_known_url = format!("{}/.well-known/nostr/nip96.json", server_url);
-    let well_known: serde_json::Value =
-        http_client.get(&well_known_url).send().await?.json().await?;
+    let well_known: serde_json::Value = http_client
+        .get(&well_known_url)
+        .send()
+        .await?
+        .json()
+        .await?;
 
     let api_url = well_known
         .get("api_url")

@@ -40,7 +40,10 @@ impl EventDeduplicator {
         let now = chrono::Utc::now().timestamp() as u64;
         let created_at = event.created_at.as_u64();
         if now > created_at && now - created_at > MAX_EVENT_AGE_SECS {
-            eprintln!("Skipping old event: {} (created_at: {})", event.id, created_at);
+            eprintln!(
+                "Skipping old event: {} (created_at: {})",
+                event.id, created_at
+            );
             return false;
         }
 
@@ -107,13 +110,7 @@ pub async fn run(
     let own_pubkey = own_keys.public_key();
 
     if json_output {
-        return watch_json(
-            &nostr_client,
-            keywords,
-            extra_kinds,
-            &author_pubkeys,
-        )
-        .await;
+        return watch_json(&nostr_client, keywords, extra_kinds, &author_pubkeys).await;
     }
     let webhook_url = webhook_url.expect("checked above");
 
@@ -121,7 +118,10 @@ pub async fn run(
     let watching_channel = channel_id.map(|s| s.to_string());
 
     if let Some(ref ch_id) = watching_channel {
-        println!("Watching NIP-28 channel: {}...", &ch_id[..16.min(ch_id.len())]);
+        println!(
+            "Watching NIP-28 channel: {}...",
+            &ch_id[..16.min(ch_id.len())]
+        );
         println!("Webhook: {}", webhook_url);
         println!("Press Ctrl+C to stop.\n");
 
@@ -143,10 +143,7 @@ pub async fn run(
         };
 
         let target_npub = target_pubkey.to_bech32()?;
-        println!(
-            "Watching for events targeting {}...",
-            &target_npub
-        );
+        println!("Watching for events targeting {}...", target_npub);
         println!("Webhook: {}", webhook_url);
         println!("Press Ctrl+C to stop.\n");
 
@@ -160,23 +157,22 @@ pub async fn run(
         } else {
             // Custom kinds subscription
             let kinds_vec: Vec<Kind> = extra_kinds.iter().map(|&k| Kind::from(k)).collect();
-            let mut filter = Filter::new()
-                .kinds(kinds_vec)
-                .since(Timestamp::now());
+            let mut filter = Filter::new().kinds(kinds_vec).since(Timestamp::now());
             if mention_only {
                 filter = filter.pubkey(target_pubkey);
             }
             nostr_client.subscribe(filter, None).await?;
-            println!("Custom kinds: {:?}, mention_only: {}", extra_kinds, mention_only);
+            println!(
+                "Custom kinds: {:?}, mention_only: {}",
+                extra_kinds, mention_only
+            );
         }
     }
 
     // Keyword watch mode (local matching on existing relays)
     if !keywords.is_empty() {
         // Subscribe to all kind:1 events since now; keyword matching is done locally
-        let filter = Filter::new()
-            .kind(Kind::TextNote)
-            .since(Timestamp::now());
+        let filter = Filter::new().kind(Kind::TextNote).since(Timestamp::now());
         nostr_client.subscribe(filter, None).await?;
         for keyword in keywords {
             println!("Watching keyword: {}", keyword);
@@ -212,8 +208,12 @@ pub async fn run(
                     if let Some(ref ch_id) = watching_channel {
                         // Check if this message belongs to the watched channel
                         let belongs = event.tags.iter().any(|t| {
-                            if let Some(TagStandard::Event { event_id, marker, .. }) = t.as_standardized() {
-                                let marker_match = marker.as_ref().map_or(false, |m| *m == Marker::Root);
+                            if let Some(TagStandard::Event {
+                                event_id, marker, ..
+                            }) = t.as_standardized()
+                            {
+                                let marker_match =
+                                    marker.as_ref().is_some_and(|m| *m == Marker::Root);
                                 event_id.to_hex() == *ch_id && marker_match
                             } else {
                                 false
@@ -223,7 +223,10 @@ pub async fn run(
                             continue;
                         }
                         let npub_str = event.pubkey.to_bech32()?;
-                        let msg = format!("**{}**\nnpub: {}\nnote: {}\n\n{}", sender_name, npub_str, note_id, event.content);
+                        let msg = format!(
+                            "**{}**\nnpub: {}\nnote: {}\n\n{}",
+                            sender_name, npub_str, note_id, event.content
+                        );
                         msg
                     } else {
                         continue;
@@ -240,14 +243,24 @@ pub async fn run(
                         let has_e_tag = event.tags.iter().any(|t| {
                             matches!(t.as_standardized(), Some(TagStandard::Event { .. }))
                         });
-                        let label = if has_e_tag { "リプライ" } else { "メンション" };
-                        format!("📩 **{}** from {}\n> {}\n🔗 {}", label, sender_name, event.content, note_id)
+                        let label = if has_e_tag {
+                            "リプライ"
+                        } else {
+                            "メンション"
+                        };
+                        format!(
+                            "📩 **{}** from {}\n> {}\n🔗 {}",
+                            label, sender_name, event.content, note_id
+                        )
                     } else if !keywords.is_empty() {
-                        let matched_keyword = keywords.iter().find(|kw| {
-                            event.content.to_lowercase().contains(&kw.to_lowercase())
-                        });
+                        let matched_keyword = keywords
+                            .iter()
+                            .find(|kw| event.content.to_lowercase().contains(&kw.to_lowercase()));
                         if let Some(kw) = matched_keyword {
-                            format!("🔍 **keyword match: {}**\n{}\n> {}\nnote: {}", kw, sender_name, event.content, note_id)
+                            format!(
+                                "🔍 **keyword match: {}**\n{}\n> {}\nnote: {}",
+                                kw, sender_name, event.content, note_id
+                            )
                         } else {
                             continue;
                         }
@@ -276,7 +289,9 @@ pub async fn run(
                     let mut original_note_str = "unknown".to_string();
 
                     if let Some(orig_id) = original_event_id {
-                        original_note_str = orig_id.to_bech32().unwrap_or_else(|_| "unknown".to_string());
+                        original_note_str = orig_id
+                            .to_bech32()
+                            .unwrap_or_else(|_| "unknown".to_string());
 
                         // Fetch the original post
                         let filter = Filter::new().id(orig_id).kind(Kind::TextNote).limit(1);
@@ -285,8 +300,13 @@ pub async fn run(
                             .await
                         {
                             if let Some(orig_event) = events.first() {
-                                let content: String = orig_event.content.chars().take(200).collect();
-                                let ellipsis = if orig_event.content.chars().count() > 200 { "..." } else { "" };
+                                let content: String =
+                                    orig_event.content.chars().take(200).collect();
+                                let ellipsis = if orig_event.content.chars().count() > 200 {
+                                    "..."
+                                } else {
+                                    ""
+                                };
                                 original_content_line = format!("\n\n> {}{}", content, ellipsis);
                             }
                         }
@@ -294,12 +314,20 @@ pub async fn run(
 
                     format!(
                         "**{}** reacted {}\nnpub: {}{}\nnote: {}\nreaction_note: {}",
-                        sender_name, emoji, npub_str, original_content_line, original_note_str, note_id
+                        sender_name,
+                        emoji,
+                        npub_str,
+                        original_content_line,
+                        original_note_str,
+                        note_id
                     )
                 }
                 k if k == Kind::from(9735u16) => {
                     // Zap Receipt (NIP-57)
-                    let npub_str_val = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
+                    let npub_str_val = event
+                        .pubkey
+                        .to_bech32()
+                        .unwrap_or_else(|_| event.pubkey.to_hex());
 
                     // Parse description tag for zapper info
                     let description_json = event.tags.iter().find_map(|t| {
@@ -311,7 +339,9 @@ pub async fn run(
                     });
 
                     let (zap_message, zapper_npub) = if let Some(desc_json) = description_json {
-                        if let Ok(zap_request) = serde_json::from_str::<serde_json::Value>(&desc_json) {
+                        if let Ok(zap_request) =
+                            serde_json::from_str::<serde_json::Value>(&desc_json)
+                        {
                             let content = zap_request["content"].as_str().unwrap_or("").to_string();
                             let zapper_npub = if let Some(pk_hex) = zap_request["pubkey"].as_str() {
                                 PublicKey::from_hex(pk_hex)
@@ -329,13 +359,19 @@ pub async fn run(
                         (String::new(), npub_str_val.clone())
                     };
 
-                    let has_bolt11 = event.tags.iter().any(|t| t.kind() == TagKind::custom("bolt11"));
+                    let has_bolt11 = event
+                        .tags
+                        .iter()
+                        .any(|t| t.kind() == TagKind::custom("bolt11"));
 
                     if has_bolt11 {
                         if zap_message.is_empty() {
                             format!("⚡ Zap受信！\nfrom: {}\nnote: {}", zapper_npub, note_id)
                         } else {
-                            format!("⚡ Zap受信！\nfrom: {}\nメッセージ: {}\nnote: {}", zapper_npub, zap_message, note_id)
+                            format!(
+                                "⚡ Zap受信！\nfrom: {}\nメッセージ: {}\nnote: {}",
+                                zapper_npub, zap_message, note_id
+                            )
                         }
                     } else {
                         continue;
@@ -343,17 +379,39 @@ pub async fn run(
                 }
                 k if extra_kinds.contains(&k.as_u16()) => {
                     // Generic custom kind notification
-                    let npub_str_val = event.pubkey.to_bech32().unwrap_or_else(|_| event.pubkey.to_hex());
+                    let npub_str_val = event
+                        .pubkey
+                        .to_bech32()
+                        .unwrap_or_else(|_| event.pubkey.to_hex());
                     let content_preview: String = event.content.chars().take(500).collect();
-                    let ellipsis = if event.content.chars().count() > 500 { "..." } else { "" };
-                    format!("📡 kind:{} from {}\n> {}{}\nnote: {}", k.as_u16(), npub_str_val, content_preview, ellipsis, note_id)
+                    let ellipsis = if event.content.chars().count() > 500 {
+                        "..."
+                    } else {
+                        ""
+                    };
+                    format!(
+                        "📡 kind:{} from {}\n> {}{}\nnote: {}",
+                        k.as_u16(),
+                        npub_str_val,
+                        content_preview,
+                        ellipsis,
+                        note_id
+                    )
                 }
                 _ => continue,
             };
 
             println!("[{}] {}", chrono::Local::now().format("%H:%M:%S"), message);
 
-            if let Err(e) = send_discord_webhook(&http_client, webhook_url, &message, &sender_name, sender_avatar.as_deref()).await {
+            if let Err(e) = send_discord_webhook(
+                &http_client,
+                webhook_url,
+                &message,
+                &sender_name,
+                sender_avatar.as_deref(),
+            )
+            .await
+            {
                 eprintln!("Webhook error: {}", e);
             }
         }
@@ -474,10 +532,13 @@ async fn get_author_name(
         return name.clone();
     }
 
-    let name = match client::fetch_profile_with_timeout(nostr_client, pubkey, AUTHOR_NAME_FETCH_TIMEOUT).await {
-        Ok(Some(metadata)) => resolve_display_name(&metadata),
-        _ => None,
-    };
+    let name =
+        match client::fetch_profile_with_timeout(nostr_client, pubkey, AUTHOR_NAME_FETCH_TIMEOUT)
+            .await
+        {
+            Ok(Some(metadata)) => resolve_display_name(&metadata),
+            _ => None,
+        };
 
     cache.insert(*pubkey, name.clone());
     name
@@ -497,7 +558,10 @@ async fn get_profile_info(
     let info = match client::fetch_profile(nostr_client, pubkey).await {
         Ok(Some(metadata)) => {
             let display = resolve_display_name(&metadata).unwrap_or_else(|| npub.clone());
-            let picture = metadata.picture.map(|u| u.to_string()).filter(|s| !s.is_empty());
+            let picture = metadata
+                .picture
+                .map(|u| u.to_string())
+                .filter(|s| !s.is_empty());
             (display, picture)
         }
         _ => (npub, None),

@@ -52,8 +52,10 @@ mod tests {
     fn test_keys_from_config_valid_key() {
         let keys = generate_keys();
         let nsec = keys.secret_key().to_bech32().unwrap();
-        let mut config = NostaroConfig::default();
-        config.secret_key = Some(nsec);
+        let config = NostaroConfig {
+            secret_key: Some(nsec),
+            ..NostaroConfig::default()
+        };
         let loaded_keys = keys_from_config(&config).unwrap();
         assert_eq!(loaded_keys.public_key(), keys.public_key());
     }

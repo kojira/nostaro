@@ -77,6 +77,7 @@ impl CacheDb {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn store_event(
         &self,
         id: &str,

@@ -51,13 +51,7 @@ async fn fetch_and_cache_profiles(
 ) -> Result<()> {
     let missing_pubkeys: Vec<PublicKey> = pubkeys
         .into_iter()
-        .filter(|pk| {
-            cache
-                .get_profile(&pk.to_hex())
-                .ok()
-                .flatten()
-                .is_none()
-        })
+        .filter(|pk| cache.get_profile(&pk.to_hex()).ok().flatten().is_none())
         .collect();
 
     if missing_pubkeys.is_empty() {
@@ -80,7 +74,7 @@ async fn fetch_and_cache_profiles(
                 metadata.name.as_deref(),
                 metadata.display_name.as_deref(),
                 metadata.about.as_deref(),
-                metadata.picture.as_ref().map(|u| u.as_str()),
+                metadata.picture.as_deref(),
             );
         }
     }
@@ -217,7 +211,9 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
                     } else {
                         let display_name = cache
                             .as_ref()
-                            .and_then(|cache| cache.get_profile(&reaction.pubkey.to_hex()).ok().flatten())
+                            .and_then(|cache| {
+                                cache.get_profile(&reaction.pubkey.to_hex()).ok().flatten()
+                            })
                             .and_then(|profile| profile.display_name.or(profile.name))
                             .filter(|name| !name.is_empty());
                         match display_name {

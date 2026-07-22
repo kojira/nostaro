@@ -17,11 +17,14 @@ pub async fn run(message: &str, quote: Option<&str>) -> Result<()> {
         // Parse the quoted entity
         let (event_id, relay_hint) = if quote_str.starts_with("nevent1") {
             let nip19_event = Nip19Event::from_bech32(quote_str)?;
-            let relay = nip19_event.relays.first().map(|r| r.to_string()).unwrap_or_default();
+            let relay = nip19_event
+                .relays
+                .first()
+                .map(|r| r.to_string())
+                .unwrap_or_default();
             (nip19_event.event_id, relay)
         } else {
-            let id = EventId::parse(quote_str)
-                .or_else(|_| EventId::from_bech32(quote_str))?;
+            let id = EventId::parse(quote_str).or_else(|_| EventId::from_bech32(quote_str))?;
             (id, String::new())
         };
 

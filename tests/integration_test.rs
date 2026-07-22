@@ -57,8 +57,10 @@ fn config_blossom_url_default() {
 
 #[test]
 fn config_blossom_url_custom() {
-    let mut config = nostaro::config::NostaroConfig::default();
-    config.blossom_server = Some("https://custom.blossom.server".to_string());
+    let config = nostaro::config::NostaroConfig {
+        blossom_server: Some("https://custom.blossom.server".to_string()),
+        ..nostaro::config::NostaroConfig::default()
+    };
     assert_eq!(config.blossom_url(), "https://custom.blossom.server");
 }
 
@@ -100,8 +102,10 @@ fn keys_from_config_with_valid_nsec() {
     let keys = nostaro::keys::generate_keys();
     let nsec = keys.secret_key().to_bech32().unwrap();
 
-    let mut config = nostaro::config::NostaroConfig::default();
-    config.secret_key = Some(nsec);
+    let config = nostaro::config::NostaroConfig {
+        secret_key: Some(nsec),
+        ..nostaro::config::NostaroConfig::default()
+    };
 
     let loaded = nostaro::keys::keys_from_config(&config).unwrap();
     assert_eq!(loaded.public_key(), keys.public_key());
@@ -112,8 +116,10 @@ fn keys_from_config_with_hex_key() {
     let keys = nostaro::keys::generate_keys();
     let hex_secret = keys.secret_key().to_secret_hex();
 
-    let mut config = nostaro::config::NostaroConfig::default();
-    config.secret_key = Some(hex_secret);
+    let config = nostaro::config::NostaroConfig {
+        secret_key: Some(hex_secret),
+        ..nostaro::config::NostaroConfig::default()
+    };
 
     let loaded = nostaro::keys::keys_from_config(&config).unwrap();
     assert_eq!(loaded.public_key(), keys.public_key());
@@ -169,20 +175,33 @@ struct TestCli {
 #[derive(clap::Subcommand, Debug)]
 enum TestCommands {
     Init,
-    Post { message: String },
-    Reply { note_id: String, message: String },
-    Repost { note_id: String },
+    Post {
+        message: String,
+    },
+    Reply {
+        note_id: String,
+        message: String,
+    },
+    Repost {
+        note_id: String,
+    },
     Timeline {
         #[arg(short, long, default_value_t = 20)]
         limit: usize,
     },
-    Search { query: String },
+    Search {
+        query: String,
+    },
     Profile {
         #[command(subcommand)]
         action: TestProfileAction,
     },
-    Follow { npub: String },
-    Unfollow { npub: String },
+    Follow {
+        npub: String,
+    },
+    Unfollow {
+        npub: String,
+    },
     Following,
     React {
         note_id: String,
@@ -203,7 +222,9 @@ enum TestCommands {
         #[command(subcommand)]
         action: TestChannelAction,
     },
-    Upload { file: String },
+    Upload {
+        file: String,
+    },
     Relay {
         #[command(subcommand)]
         action: TestRelayAction,
@@ -265,8 +286,7 @@ fn cli_parse_post() {
 
 #[test]
 fn cli_parse_reply() {
-    let cli =
-        TestCli::try_parse_from(["nostaro", "reply", "note1abc", "Hello reply!"]).unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "reply", "note1abc", "Hello reply!"]).unwrap();
     match cli.command {
         TestCommands::Reply { note_id, message } => {
             assert_eq!(note_id, "note1abc");
@@ -326,8 +346,7 @@ fn cli_parse_profile_show_no_pubkey() {
 
 #[test]
 fn cli_parse_profile_show_with_pubkey() {
-    let cli =
-        TestCli::try_parse_from(["nostaro", "profile", "show", "-p", "npub1abc123"]).unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "profile", "show", "-p", "npub1abc123"]).unwrap();
     match cli.command {
         TestCommands::Profile { action } => match action {
             TestProfileAction::Show { pubkey } => assert_eq!(pubkey.unwrap(), "npub1abc123"),
@@ -422,8 +441,7 @@ fn cli_parse_react_custom_emoji() {
 
 #[test]
 fn cli_parse_dm_send() {
-    let cli =
-        TestCli::try_parse_from(["nostaro", "dm", "send", "npub1abc", "Hello DM!"]).unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "dm", "send", "npub1abc", "Hello DM!"]).unwrap();
     match cli.command {
         TestCommands::Dm { action } => match action {
             TestDmAction::Send { npub, message } => {
@@ -479,15 +497,8 @@ fn cli_parse_zap() {
 
 #[test]
 fn cli_parse_zap_with_message() {
-    let cli = TestCli::try_parse_from([
-        "nostaro",
-        "zap",
-        "npub1abc",
-        "2100",
-        "-m",
-        "Great post!",
-    ])
-    .unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "zap", "npub1abc", "2100", "-m", "Great post!"])
+        .unwrap();
     match cli.command {
         TestCommands::Zap {
             target,
@@ -527,9 +538,8 @@ fn cli_parse_channel_read() {
 
 #[test]
 fn cli_parse_channel_post() {
-    let cli =
-        TestCli::try_parse_from(["nostaro", "channel", "post", "abc123", "Hello channel!"])
-            .unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "channel", "post", "abc123", "Hello channel!"])
+        .unwrap();
     match cli.command {
         TestCommands::Channel { action } => match action {
             TestChannelAction::Post { id, message } => {
@@ -553,8 +563,7 @@ fn cli_parse_upload() {
 
 #[test]
 fn cli_parse_relay_add() {
-    let cli =
-        TestCli::try_parse_from(["nostaro", "relay", "add", "wss://relay.damus.io"]).unwrap();
+    let cli = TestCli::try_parse_from(["nostaro", "relay", "add", "wss://relay.damus.io"]).unwrap();
     match cli.command {
         TestCommands::Relay { action } => match action {
             TestRelayAction::Add { url } => assert_eq!(url, "wss://relay.damus.io"),

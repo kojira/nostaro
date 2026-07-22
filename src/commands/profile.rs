@@ -18,7 +18,7 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
     };
 
     let npub = pubkey.to_bech32()?;
-    println!("Fetching profile for {}...\n", &npub);
+    println!("Fetching profile for {}...\n", npub);
 
     let metadata = client::fetch_profile(&nostr_client, &pubkey).await?;
 
@@ -55,7 +55,7 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
                 metadata.name.as_deref(),
                 metadata.display_name.as_deref(),
                 metadata.about.as_deref(),
-                metadata.picture.as_ref().map(|u| u.as_str()),
+                metadata.picture.as_deref(),
             );
         }
     } else {
@@ -70,6 +70,7 @@ pub async fn show(pubkey_str: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 pub async fn set(
     name: Option<&str>,
     display_name: Option<&str>,

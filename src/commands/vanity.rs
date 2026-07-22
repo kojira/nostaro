@@ -42,20 +42,18 @@ pub fn run(prefix: &str, threads: Option<usize>) -> Result<()> {
     let found_progress = Arc::clone(&found);
     let cancelled_progress = Arc::clone(&cancelled);
     let start = Instant::now();
-    let progress_handle = std::thread::spawn(move || {
-        loop {
-            std::thread::sleep(std::time::Duration::from_secs(1));
-            if found_progress.load(Ordering::SeqCst) || cancelled_progress.load(Ordering::SeqCst) {
-                break;
-            }
-            let count = counter_progress.load(Ordering::Relaxed);
-            let elapsed = start.elapsed().as_secs();
-            let rate = if elapsed > 0 { count / elapsed } else { count };
-            eprintln!(
-                "Tried: {} keys | Elapsed: {}s | Rate: {} keys/s",
-                count, elapsed, rate
-            );
+    let progress_handle = std::thread::spawn(move || loop {
+        std::thread::sleep(std::time::Duration::from_secs(1));
+        if found_progress.load(Ordering::SeqCst) || cancelled_progress.load(Ordering::SeqCst) {
+            break;
         }
+        let count = counter_progress.load(Ordering::Relaxed);
+        let elapsed = start.elapsed().as_secs();
+        let rate = count.checked_div(elapsed).unwrap_or(count);
+        eprintln!(
+            "Tried: {} keys | Elapsed: {}s | Rate: {} keys/s",
+            count, elapsed, rate
+        );
     });
 
     // Build rayon thread pool and search
@@ -95,7 +93,11 @@ pub fn run(prefix: &str, threads: Option<usize>) -> Result<()> {
 
     match result {
         Some((nsec, npub)) => {
-            println!("\nFound after {} tries ({:.2}s)!", total, elapsed.as_secs_f64());
+            println!(
+                "\nFound after {} tries ({:.2}s)!",
+                total,
+                elapsed.as_secs_f64()
+            );
             println!("nsec: {}", nsec);
             println!("npub: {}", npub);
         }

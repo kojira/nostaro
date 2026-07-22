@@ -17,8 +17,7 @@ pub async fn run(event_id_str: &str) -> Result<()> {
         let nip19_event = Nip19Event::from_bech32(event_id_str)?;
         (nip19_event.event_id, nip19_event.relays)
     } else {
-        let id = EventId::parse(event_id_str)
-            .or_else(|_| EventId::from_bech32(event_id_str))?;
+        let id = EventId::parse(event_id_str).or_else(|_| EventId::from_bech32(event_id_str))?;
         (id, vec![])
     };
 
