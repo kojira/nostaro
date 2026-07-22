@@ -14,7 +14,10 @@ pub async fn run(kind: u16, tags: Vec<String>, content: &str) -> Result<()> {
     for tag_str in &tags {
         let parts: Vec<String> = tag_str.split(',').map(|s| s.to_string()).collect();
         if parts.len() < 2 {
-            bail!("Invalid tag format: '{}'. Expected 'key,value[,value...]'", tag_str);
+            bail!(
+                "Invalid tag format: '{}'. Expected 'key,value[,value...]'",
+                tag_str
+            );
         }
         parsed_tags.push(Tag::parse(parts)?);
     }

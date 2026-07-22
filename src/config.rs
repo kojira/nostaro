@@ -109,7 +109,9 @@ mod tests {
         assert!(config.secret_key.is_none());
         assert!(config.relays.is_empty());
         assert_eq!(config.default_relays.len(), 4);
-        assert!(config.default_relays.contains(&"wss://r.kojira.io".to_string()));
+        assert!(config
+            .default_relays
+            .contains(&"wss://r.kojira.io".to_string()));
     }
 
     #[test]
@@ -121,8 +123,10 @@ mod tests {
 
     #[test]
     fn test_active_relays_uses_custom_when_set() {
-        let mut config = NostaroConfig::default();
-        config.relays = vec!["wss://custom.relay".to_string()];
+        let config = NostaroConfig {
+            relays: vec!["wss://custom.relay".to_string()],
+            ..NostaroConfig::default()
+        };
         let active = config.active_relays();
         assert_eq!(active, vec!["wss://custom.relay"]);
     }

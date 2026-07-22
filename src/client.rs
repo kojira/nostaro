@@ -49,9 +49,7 @@ pub async fn repost_event(client: &Client, event: &Event) -> Result<()> {
 
 pub async fn fetch_timeline(client: &Client, limit: usize) -> Result<Vec<Event>> {
     let filter = Filter::new().kind(Kind::TextNote).limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(events)
@@ -66,9 +64,7 @@ pub async fn fetch_timeline_for_authors(
         .kind(Kind::TextNote)
         .authors(authors.to_vec())
         .limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(events)
@@ -79,9 +75,7 @@ pub async fn search_notes(client: &Client, query: &str, limit: usize) -> Result<
         .kind(Kind::TextNote)
         .search(query)
         .limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(events)
@@ -111,9 +105,7 @@ pub async fn fetch_contacts(client: &Client, pubkey: &PublicKey) -> Result<Vec<P
         .author(*pubkey)
         .limit(1);
 
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
 
     if let Some(event) = events.into_iter().next() {
         let mut contacts = Vec::new();
@@ -129,9 +121,7 @@ pub async fn fetch_contacts(client: &Client, pubkey: &PublicKey) -> Result<Vec<P
 }
 
 pub async fn fetch_followers(client: &Client, pubkey: &PublicKey) -> Result<Vec<PublicKey>> {
-    let filter = Filter::new()
-        .kind(Kind::ContactList)
-        .pubkey(*pubkey);
+    let filter = Filter::new().kind(Kind::ContactList).pubkey(*pubkey);
 
     let events: Vec<Event> = client
         .fetch_events(filter, Duration::from_secs(15))
@@ -180,21 +170,22 @@ pub async fn publish_contact_list(client: &Client, contacts: &[PublicKey]) -> Re
 pub async fn fetch_event_by_id(client: &Client, event_id: &EventId) -> Result<Option<Event>> {
     let filter = Filter::new().id(*event_id);
 
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
 
     Ok(events.into_iter().next())
 }
 
 pub async fn send_dm(client: &Client, receiver: PublicKey, message: &str) -> Result<()> {
-    client
-        .send_private_msg(receiver, message, [])
-        .await?;
+    client.send_private_msg(receiver, message, []).await?;
     Ok(())
 }
 
-pub async fn send_dm_nip04(client: &Client, keys: &Keys, receiver: PublicKey, message: &str) -> Result<()> {
+pub async fn send_dm_nip04(
+    client: &Client,
+    keys: &Keys,
+    receiver: PublicKey,
+    message: &str,
+) -> Result<()> {
     use nostr_sdk::nips::nip04;
 
     let encrypted = nip04::encrypt(keys.secret_key(), &receiver, message)?;
@@ -204,18 +195,24 @@ pub async fn send_dm_nip04(client: &Client, keys: &Keys, receiver: PublicKey, me
     Ok(())
 }
 
-pub async fn fetch_gift_wraps(client: &Client, pubkey: &PublicKey, limit: usize) -> Result<Vec<Event>> {
+pub async fn fetch_gift_wraps(
+    client: &Client,
+    pubkey: &PublicKey,
+    limit: usize,
+) -> Result<Vec<Event>> {
     let filter = Filter::new()
         .kind(Kind::GiftWrap)
         .pubkey(*pubkey)
         .limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(15))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(15)).await?;
     Ok(events.into_iter().collect())
 }
 
-pub async fn fetch_nip04_dms(client: &Client, pubkey: &PublicKey, limit: usize) -> Result<Vec<Event>> {
+pub async fn fetch_nip04_dms(
+    client: &Client,
+    pubkey: &PublicKey,
+    limit: usize,
+) -> Result<Vec<Event>> {
     // Fetch DMs where user is author or recipient
     let filter_sent = Filter::new()
         .kind(Kind::EncryptedDirectMessage)
@@ -247,12 +244,8 @@ pub async fn fetch_nip04_dms(client: &Client, pubkey: &PublicKey, limit: usize) 
 }
 
 pub async fn fetch_channels(client: &Client, limit: usize) -> Result<Vec<Event>> {
-    let filter = Filter::new()
-        .kind(Kind::ChannelCreation)
-        .limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let filter = Filter::new().kind(Kind::ChannelCreation).limit(limit);
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     Ok(events)
@@ -267,9 +260,7 @@ pub async fn fetch_channel_messages(
         .kind(Kind::ChannelMessage)
         .event(*channel_id)
         .limit(limit);
-    let events = client
-        .fetch_events(filter, Duration::from_secs(10))
-        .await?;
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by(|a, b| a.created_at.cmp(&b.created_at));
     Ok(events)
@@ -300,9 +291,7 @@ pub async fn post_channel_message(
     content: &str,
 ) -> Result<()> {
     let ch_hex = channel_id.to_hex();
-    let tags = vec![
-        Tag::parse(["e", &ch_hex, "", "root"])?,
-    ];
+    let tags = vec![Tag::parse(["e", &ch_hex, "", "root"])?];
     let builder = EventBuilder::new(Kind::ChannelMessage, content).tags(tags);
     client.send_event_builder(builder).await?;
     Ok(())

@@ -356,10 +356,10 @@ async fn main() -> anyhow::Result<()> {
     match cli.command {
         Commands::Init => commands::init::run().await?,
         Commands::Pubkey => commands::pubkey::run().await?,
-        Commands::Post { message, quote } => commands::post::run(&message, quote.as_deref()).await?,
-        Commands::Reply { note_id, message } => {
-            commands::reply::run(&note_id, &message).await?
+        Commands::Post { message, quote } => {
+            commands::post::run(&message, quote.as_deref()).await?
         }
+        Commands::Reply { note_id, message } => commands::reply::run(&note_id, &message).await?,
         Commands::Repost { note_id } => commands::repost::run(&note_id).await?,
         Commands::Timeline {
             limit,
@@ -367,9 +367,7 @@ async fn main() -> anyhow::Result<()> {
         } => commands::timeline::run(limit, with_reactions).await?,
         Commands::Search { query, limit } => commands::search::run(&query, limit).await?,
         Commands::Profile { action } => match action {
-            ProfileAction::Show { pubkey } => {
-                commands::profile::show(pubkey.as_deref()).await?
-            }
+            ProfileAction::Show { pubkey } => commands::profile::show(pubkey.as_deref()).await?,
             ProfileAction::Set {
                 name,
                 display_name,
@@ -399,13 +397,13 @@ async fn main() -> anyhow::Result<()> {
         Commands::Unfollow { npub } => commands::follow::unfollow(&npub).await?,
         Commands::Following { npub } => commands::follow::following(npub.as_deref()).await?,
         Commands::Followers { npub } => commands::follow::followers(npub.as_deref()).await?,
-        Commands::React { note_id, emoji } => {
-            commands::react::run(&note_id, &emoji).await?
-        }
+        Commands::React { note_id, emoji } => commands::react::run(&note_id, &emoji).await?,
         Commands::Dm { action } => match action {
-            DmAction::Send { npub, message, nip04 } => {
-                commands::dm::send(&npub, &message, nip04).await?
-            }
+            DmAction::Send {
+                npub,
+                message,
+                nip04,
+            } => commands::dm::send(&npub, &message, nip04).await?,
             DmAction::Read { npub } => commands::dm::read(npub.as_deref()).await?,
         },
         Commands::Zap {
@@ -418,22 +416,16 @@ async fn main() -> anyhow::Result<()> {
                 name,
                 about,
                 picture,
-            } => {
-                commands::channel::create(&name, about.as_deref(), picture.as_deref()).await?
-            }
+            } => commands::channel::create(&name, about.as_deref(), picture.as_deref()).await?,
             ChannelAction::Edit {
                 id,
                 name,
                 about,
                 picture,
-            } => {
-                commands::channel::edit(&id, &name, about.as_deref(), picture.as_deref()).await?
-            }
+            } => commands::channel::edit(&id, &name, about.as_deref(), picture.as_deref()).await?,
             ChannelAction::List => commands::channel::list().await?,
             ChannelAction::Read { id } => commands::channel::read(&id).await?,
-            ChannelAction::Post { id, message } => {
-                commands::channel::post(&id, &message).await?
-            }
+            ChannelAction::Post { id, message } => commands::channel::post(&id, &message).await?,
         },
         Commands::Upload {
             file,
@@ -449,9 +441,7 @@ async fn main() -> anyhow::Result<()> {
             RelayAction::Remove { url } => commands::relay::remove(&url).await?,
             RelayAction::List => commands::relay::list().await?,
         },
-        Commands::Event { kind, tag, content } => {
-            commands::event::run(kind, tag, &content).await?
-        }
+        Commands::Event { kind, tag, content } => commands::event::run(kind, tag, &content).await?,
         Commands::Watch {
             webhook,
             npub,
@@ -479,9 +469,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Decode { entity } => commands::decode::run(&entity)?,
         Commands::Get { event_id } => commands::get::run(&event_id).await?,
-        Commands::Vanity { prefix, threads } => {
-            commands::vanity::run(&prefix, threads)?
-        }
+        Commands::Vanity { prefix, threads } => commands::vanity::run(&prefix, threads)?,
     }
 
     Ok(())
@@ -494,7 +482,15 @@ mod tests {
     #[test]
     fn test_kind_delimiter_parsing() {
         use clap::Parser;
-        let cli = Cli::try_parse_from(["nostaro", "watch", "--webhook", "http://example.com", "--kind", "1,9735,7"]).unwrap();
+        let cli = Cli::try_parse_from([
+            "nostaro",
+            "watch",
+            "--webhook",
+            "http://example.com",
+            "--kind",
+            "1,9735,7",
+        ])
+        .unwrap();
         if let Commands::Watch { kinds, .. } = cli.command {
             assert_eq!(kinds, vec![1u16, 9735u16, 7u16]);
         } else {

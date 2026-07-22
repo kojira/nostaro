@@ -49,11 +49,7 @@ pub async fn edit(
     }
     let content = serde_json::to_string(&meta)?;
 
-    let relay_url = config
-        .active_relays()
-        .first()
-        .cloned()
-        .unwrap_or_default();
+    let relay_url = config.active_relays().first().cloned().unwrap_or_default();
 
     println!("Updating channel metadata...");
     client::edit_channel(&nostr_client, &channel_id, &content, &relay_url).await?;

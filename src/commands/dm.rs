@@ -84,14 +84,13 @@ pub async fn read(npub_filter: Option<&str>) -> Result<()> {
         // Determine the other party (sender if we received, recipient if we sent)
         let other_party = if dm.pubkey == keys.public_key() {
             // We sent this message, get recipient from 'p' tag
-            dm.tags.iter()
-                .find_map(|tag| {
-                    if let Some(TagStandard::PublicKey { public_key, .. }) = tag.as_standardized() {
-                        Some(*public_key)
-                    } else {
-                        None
-                    }
-                })
+            dm.tags.iter().find_map(|tag| {
+                if let Some(TagStandard::PublicKey { public_key, .. }) = tag.as_standardized() {
+                    Some(*public_key)
+                } else {
+                    None
+                }
+            })
         } else {
             // We received this message, sender is the author
             Some(dm.pubkey)

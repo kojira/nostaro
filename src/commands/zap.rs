@@ -74,7 +74,12 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     let tags = vec![
         Tag::public_key(target_pubkey),
         Tag::parse(["amount".to_string(), amount_msats.to_string()])?,
-        Tag::parse(relay_tag_values.into_iter().map(|s| s.to_string()).collect::<Vec<String>>())?,
+        Tag::parse(
+            relay_tag_values
+                .into_iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>(),
+        )?,
     ];
 
     let builder = EventBuilder::new(Kind::ZapRequest, content).tags(tags);
@@ -95,10 +100,9 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     let target_npub = target_pubkey.to_bech32()?;
 
     // Try Coinos API first, fall back to Cashu
-    let coinos_token_path = config
-        .coinos_api_token_path
-        .clone()
-        .unwrap_or_else(|| "/Users/kojira/.openclaw/workspace/data/secrets/coinos_api_token.txt".to_string());
+    let coinos_token_path = config.coinos_api_token_path.clone().unwrap_or_else(|| {
+        "/Users/kojira/.openclaw/workspace/data/secrets/coinos_api_token.txt".to_string()
+    });
 
     let mut paid = false;
 
@@ -111,7 +115,10 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
                 .post("https://coinos.io/api/payments")
                 .header("Authorization", format!("Bearer {}", token))
                 .header("Content-Type", "application/json")
-                .header("User-Agent", "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36")
+                .header(
+                    "User-Agent",
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36",
+                )
                 .json(&coinos_body)
                 .send()
                 .await;
@@ -123,7 +130,10 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
                 Ok(resp) => {
                     let status = resp.status();
                     let body = resp.text().await.unwrap_or_default();
-                    eprintln!("Coinos API failed ({}): {}. Falling back to Cashu...", status, body);
+                    eprintln!(
+                        "Coinos API failed ({}): {}. Falling back to Cashu...",
+                        status, body
+                    );
                 }
                 Err(e) => {
                     eprintln!("Coinos API error: {}. Falling back to Cashu...", e);
@@ -135,7 +145,13 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     if !paid {
         let cashu_path = "/Users/kojira/.openclaw/workspace/data/cashu-venv/bin/cashu";
         match Command::new(cashu_path)
-            .args(["-h", "https://mint.coinos.io", "pay", &invoice_resp.pr, "-y"])
+            .args([
+                "-h",
+                "https://mint.coinos.io",
+                "pay",
+                &invoice_resp.pr,
+                "-y",
+            ])
             .output()
         {
             Ok(output) if output.status.success() => {
@@ -166,8 +182,7 @@ pub async fn run(target: &str, amount: u64, message: Option<&str>) -> Result<()>
     if paid {
         println!(
             "⚡ Zap sent successfully! {} sats to {}",
-            amount,
-            &target_npub
+            amount, &target_npub
         );
     }
 
