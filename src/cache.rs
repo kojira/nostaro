@@ -42,7 +42,13 @@ impl CacheDb {
     }
 
     fn db_path() -> PathBuf {
-        NostaroConfig::config_dir().join("cache.db")
+        // Keep the cache alongside whichever config.toml is active (respects
+        // --config/NOSTARO_CONFIG) instead of always using ~/.nostaro, so isolated
+        // config paths get an isolated cache too.
+        NostaroConfig::config_path()
+            .parent()
+            .map(|dir| dir.join("cache.db"))
+            .unwrap_or_else(|| NostaroConfig::config_dir().join("cache.db"))
     }
 
     fn init_tables(&self) -> Result<()> {

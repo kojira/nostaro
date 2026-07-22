@@ -5,10 +5,18 @@ use std::time::Duration;
 use crate::config::NostaroConfig;
 
 pub async fn create_client(keys: &Keys, config: &NostaroConfig) -> Result<Client> {
+    create_client_with_relay_list(keys, &config.active_relays()).await
+}
+
+/// Build a client connected only to the given relays, ignoring the config's relay list.
+///
+/// Used by `watch --relay <url>` so callers (e.g. OpenCrab) can pin the exact relay set
+/// without it being overridden by whatever is in the account's config.toml.
+pub async fn create_client_with_relay_list(keys: &Keys, relay_urls: &[String]) -> Result<Client> {
     let client = Client::builder().signer(keys.clone()).build();
 
-    for relay in config.active_relays() {
-        client.add_relay(&relay).await?;
+    for relay in relay_urls {
+        client.add_relay(relay).await?;
     }
 
     client.connect().await;
@@ -80,9 +88,15 @@ pub async fn search_notes(client: &Client, query: &str, limit: usize) -> Result<
 }
 
 pub async fn fetch_profile(client: &Client, pubkey: &PublicKey) -> Result<Option<Metadata>> {
-    let metadata = client
-        .fetch_metadata(*pubkey, Duration::from_secs(10))
-        .await?;
+    fetch_profile_with_timeout(client, pubkey, Duration::from_secs(10)).await
+}
+
+pub async fn fetch_profile_with_timeout(
+    client: &Client,
+    pubkey: &PublicKey,
+    timeout: Duration,
+) -> Result<Option<Metadata>> {
+    let metadata = client.fetch_metadata(*pubkey, timeout).await?;
     Ok(metadata)
 }
 

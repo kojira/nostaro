@@ -1,9 +1,14 @@
 use clap::{Parser, Subcommand};
 use nostaro::commands;
+use std::path::PathBuf;
 
 #[derive(Parser)]
 #[command(name = "nostaro", version, about = "A Nostr CLI tool")]
 struct Cli {
+    /// Path to the config file to use (defaults to ~/.nostaro/config.toml)
+    #[arg(long, global = true, env = "NOSTARO_CONFIG")]
+    config: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -12,6 +17,9 @@ struct Cli {
 enum Commands {
     /// Initialize nostaro with a new or existing keypair
     Init,
+
+    /// Print your public key (hex) to stdout
+    Pubkey,
 
     /// Post a text note to Nostr (kind:1)
     Post {
@@ -143,9 +151,9 @@ enum Commands {
 
     /// Watch for mentions, replies, and reactions in real-time
     Watch {
-        /// Discord webhook URL (required)
+        /// Discord webhook URL (required unless --json is used)
         #[arg(long)]
-        webhook: String,
+        webhook: Option<String>,
         /// Target npub to watch (defaults to your own)
         #[arg(long)]
         npub: Option<String>,
@@ -155,7 +163,7 @@ enum Commands {
         /// Keywords to watch (can be specified multiple times)
         #[arg(long = "keyword")]
         keywords: Vec<String>,
-        /// Comma-separated event kinds to watch (e.g. --kind 1,9735,7)
+        /// Event kinds to watch, repeatable or comma-separated (e.g. --kind 1,9735,7)
         #[arg(long = "kind", value_delimiter = ',')]
         kinds: Vec<u16>,
         /// Only receive events that mention (p-tag) the target pubkey (default: true)
@@ -164,6 +172,15 @@ enum Commands {
         /// Disable mention-only mode (receive all events of watched kinds)
         #[arg(long, action = clap::ArgAction::SetFalse, overrides_with = "mention_only")]
         no_mention_only: bool,
+        /// Only receive events from these authors, npub or hex (can be specified multiple times)
+        #[arg(long = "author")]
+        authors: Vec<String>,
+        /// Connect only to these relays, ignoring the config's relay list (can be specified multiple times)
+        #[arg(long = "relay")]
+        relays: Vec<String>,
+        /// Output matched events as JSON Lines on stdout instead of sending to Discord
+        #[arg(long)]
+        json: bool,
     },
 
     /// Post a custom kind Nostr event
@@ -332,8 +349,13 @@ enum RelayAction {
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    if let Some(path) = cli.config {
+        nostaro::config::NostaroConfig::set_config_path_override(path);
+    }
+
     match cli.command {
         Commands::Init => commands::init::run().await?,
+        Commands::Pubkey => commands::pubkey::run().await?,
         Commands::Post { message, quote } => commands::post::run(&message, quote.as_deref()).await?,
         Commands::Reply { note_id, message } => {
             commands::reply::run(&note_id, &message).await?
@@ -430,8 +452,30 @@ async fn main() -> anyhow::Result<()> {
         Commands::Event { kind, tag, content } => {
             commands::event::run(kind, tag, &content).await?
         }
-        Commands::Watch { webhook, npub, channel, keywords, kinds, mention_only, .. } => {
-            commands::watch::run(&webhook, npub.as_deref(), channel.as_deref(), &keywords, &kinds, mention_only).await?
+        Commands::Watch {
+            webhook,
+            npub,
+            channel,
+            keywords,
+            kinds,
+            mention_only,
+            authors,
+            relays,
+            json,
+            ..
+        } => {
+            commands::watch::run(
+                webhook.as_deref(),
+                npub.as_deref(),
+                channel.as_deref(),
+                &keywords,
+                &kinds,
+                mention_only,
+                &authors,
+                &relays,
+                json,
+            )
+            .await?
         }
         Commands::Decode { entity } => commands::decode::run(&entity)?,
         Commands::Get { event_id } => commands::get::run(&event_id).await?,

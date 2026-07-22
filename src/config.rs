@@ -1,6 +1,9 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
+use std::sync::OnceLock;
+
+static CONFIG_PATH_OVERRIDE: OnceLock<PathBuf> = OnceLock::new();
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct NostaroConfig {
@@ -39,7 +42,18 @@ impl NostaroConfig {
     }
 
     pub fn config_path() -> PathBuf {
+        if let Some(path) = CONFIG_PATH_OVERRIDE.get() {
+            return path.clone();
+        }
         Self::config_dir().join("config.toml")
+    }
+
+    /// Override the config file path used by `load`/`save` for the rest of the process.
+    ///
+    /// Used by `--config <path>` / `NOSTARO_CONFIG` so multiple accounts (e.g. one per
+    /// agent) can run against isolated config files without touching `~/.nostaro`.
+    pub fn set_config_path_override(path: PathBuf) {
+        let _ = CONFIG_PATH_OVERRIDE.set(path);
     }
 
     pub fn load() -> Result<Self> {
