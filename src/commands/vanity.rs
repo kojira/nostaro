@@ -113,15 +113,15 @@ pub fn run(prefix: &str, threads: Option<usize>, json_output: bool) -> Result<()
             emit_result(&keys, json_output)
         }
         None => {
-            print_status(
-                json_output,
-                format!(
-                    "\nSearch stopped after {} tries ({:.2}s). No match found.",
-                    total,
-                    elapsed.as_secs_f64()
-                ),
+            // Reachable only via cancellation (Ctrl+C) since the search range is
+            // effectively unbounded. Exit non-zero and emit no result line so a caller
+            // (which reads the last JSON line of stdout) can distinguish this from a
+            // successful generation instead of seeing exit 0 with empty output.
+            bail!(
+                "Search stopped after {} tries ({:.2}s). No match found.",
+                total,
+                elapsed.as_secs_f64()
             );
-            Ok(())
         }
     }
 }
@@ -155,4 +155,53 @@ fn num_cpus() -> usize {
     std::thread::available_parallelism()
         .map(|n| n.get())
         .unwrap_or(4)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The JSON schema OpenCrab parses is a stable contract: exactly nsec/npub/pubkey.
+    #[test]
+    fn vanity_result_json_has_expected_fields() {
+        let result = VanityResult {
+            nsec: "nsec1abc".to_string(),
+            npub: "npub1def".to_string(),
+            pubkey: "deadbeef".to_string(),
+        };
+        let json: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&result).unwrap()).unwrap();
+        let obj = json.as_object().unwrap();
+        assert_eq!(obj.len(), 3, "unexpected extra/missing JSON fields");
+        assert_eq!(obj["nsec"], "nsec1abc");
+        assert_eq!(obj["npub"], "npub1def");
+        assert_eq!(obj["pubkey"], "deadbeef");
+    }
+
+    /// A freshly generated key yields well-formed bech32/hex values for every field.
+    #[test]
+    fn generated_key_produces_valid_fields() {
+        let keys = Keys::generate();
+        let nsec = keys.secret_key().to_bech32().unwrap();
+        let npub = keys.public_key().to_bech32().unwrap();
+        let pubkey = keys.public_key().to_hex();
+
+        assert!(nsec.starts_with("nsec1"));
+        assert!(npub.starts_with("npub1"));
+        assert_eq!(pubkey.len(), 64);
+        assert!(pubkey.chars().all(|c| c.is_ascii_hexdigit()));
+    }
+
+    #[test]
+    fn empty_prefix_passes_bech32_validation() {
+        // An empty prefix must not trip the bech32 char check (no chars to reject),
+        // so the empty-prefix -> random-key path stays reachable.
+        assert!(run("", Some(1), true).is_ok());
+    }
+
+    #[test]
+    fn invalid_bech32_prefix_is_rejected() {
+        // 'b', 'i', 'o', '1' are not in the bech32 charset.
+        assert!(run("boi", Some(1), true).is_err());
+    }
 }
