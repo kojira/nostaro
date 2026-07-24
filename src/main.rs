@@ -208,13 +208,20 @@ enum Commands {
         event_id: String,
     },
 
-    /// Search for a vanity npub with a given prefix
+    /// Search for a vanity npub with a given prefix (omit for an immediate random key)
     Vanity {
-        /// Desired prefix after npub1
-        prefix: String,
+        /// Desired prefix after npub1 (positional form)
+        prefix: Option<String>,
+        /// Desired prefix after npub1 (flag form; takes precedence over the positional
+        /// argument if both are given). Does not read or write any config/secret-key file.
+        #[arg(long = "prefix")]
+        prefix_flag: Option<String>,
         /// Number of threads (default: CPU cores)
         #[arg(short, long)]
         threads: Option<usize>,
+        /// Output the result as a single JSON line on stdout; progress goes to stderr
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -469,7 +476,15 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Decode { entity } => commands::decode::run(&entity)?,
         Commands::Get { event_id } => commands::get::run(&event_id).await?,
-        Commands::Vanity { prefix, threads } => commands::vanity::run(&prefix, threads)?,
+        Commands::Vanity {
+            prefix,
+            prefix_flag,
+            threads,
+            json,
+        } => {
+            let prefix = prefix_flag.or(prefix).unwrap_or_default();
+            commands::vanity::run(&prefix, threads, json)?
+        }
     }
 
     Ok(())
@@ -495,6 +510,66 @@ mod tests {
             assert_eq!(kinds, vec![1u16, 9735u16, 7u16]);
         } else {
             panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_vanity_positional_prefix() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "vanity", "abc"]).unwrap();
+        match cli.command {
+            Commands::Vanity {
+                prefix,
+                prefix_flag,
+                json,
+                ..
+            } => {
+                assert_eq!(prefix.as_deref(), Some("abc"));
+                assert_eq!(prefix_flag, None);
+                assert!(!json);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn test_vanity_json_prefix_flag_no_positional() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "vanity", "--json", "--prefix=abc"]).unwrap();
+        match cli.command {
+            Commands::Vanity {
+                prefix,
+                prefix_flag,
+                json,
+                ..
+            } => {
+                assert_eq!(prefix, None);
+                assert_eq!(prefix_flag.as_deref(), Some("abc"));
+                assert!(json);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn test_vanity_no_prefix_at_all_is_valid() {
+        use clap::Parser;
+        // Omitting the prefix entirely must parse successfully (empty prefix means
+        // "return a random key immediately"), not error out like the old required
+        // positional argument did.
+        let cli = Cli::try_parse_from(["nostaro", "vanity", "--json"]).unwrap();
+        match cli.command {
+            Commands::Vanity {
+                prefix,
+                prefix_flag,
+                json,
+                ..
+            } => {
+                assert_eq!(prefix, None);
+                assert_eq!(prefix_flag, None);
+                assert!(json);
+            }
+            _ => panic!("wrong command"),
         }
     }
 }
