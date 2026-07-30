@@ -70,13 +70,128 @@ fn mentions_pubkey(event: &Event, pubkey: &PublicKey) -> bool {
     })
 }
 
-/// True if `content` contains any of `keywords` (case-insensitive). Empty keyword lists
-/// never match; callers decide what "no keywords configured" means.
-fn matches_keyword(content: &str, keywords: &[String]) -> bool {
+/// The first of `keywords` contained in `content` (case-insensitive). An empty keyword
+/// list never matches.
+fn matched_keyword(content: &str, keywords: &[String]) -> Option<String> {
     let lowered = content.to_lowercase();
     keywords
         .iter()
-        .any(|kw| lowered.contains(&kw.to_lowercase()))
+        .find(|kw| lowered.contains(&kw.to_lowercase()))
+        .cloned()
+}
+
+/// Why an event was kept. Only affects how the webhook path labels it; the `--json` path
+/// emits the raw event either way.
+#[derive(Debug, PartialEq, Eq)]
+enum MatchReason {
+    /// Carries a `p` tag for the watched pubkey (mention, reply, reaction, zap...).
+    Mention,
+    /// Content matched this keyword.
+    Keyword(String),
+    /// Written by one of the `--author`s.
+    Author,
+    /// No narrowing condition was configured, so everything of the watched kinds passes.
+    Unfiltered,
+}
+
+/// What `watch` subscribes to and which received events it keeps.
+///
+/// Built straight from the command-line arguments (`--npub`, `--kind`, `--keyword`,
+/// `--author`, `--mention-only`) and used by **both** output modes: `--json` and the
+/// Discord webhook differ only in where a matched event goes, never in what is matched.
+struct WatchFilter {
+    /// Pubkey watched via `p` tags — `--npub` or, by default, our own.
+    target_pubkey: PublicKey,
+    /// Kinds to subscribe to. `--kind` when given, otherwise kind:1 + kind:7 so mentions,
+    /// replies and reactions all arrive.
+    kinds: Vec<Kind>,
+    /// Whether the `p`-tag condition is in play (`--mention-only`, the default).
+    mention_only: bool,
+    keywords: Vec<String>,
+    authors: Vec<PublicKey>,
+}
+
+impl WatchFilter {
+    fn new(
+        target_pubkey: PublicKey,
+        extra_kinds: &[u16],
+        mention_only: bool,
+        keywords: &[String],
+        authors: &[PublicKey],
+    ) -> Self {
+        let kinds = if extra_kinds.is_empty() {
+            vec![Kind::TextNote, Kind::Reaction]
+        } else {
+            extra_kinds.iter().map(|&k| Kind::from(k)).collect()
+        };
+        Self {
+            target_pubkey,
+            kinds,
+            mention_only,
+            keywords: keywords.to_vec(),
+            authors: authors.to_vec(),
+        }
+    }
+
+    /// True when at least one narrowing condition (p tag / keyword / author) is set.
+    fn is_narrowed(&self) -> bool {
+        self.mention_only || !self.keywords.is_empty() || !self.authors.is_empty()
+    }
+
+    /// One relay subscription per active condition, so the relay itself delivers the
+    /// union: events targeting us, events containing a keyword, events by a watched
+    /// author. With no condition at all we subscribe to the bare kinds, which is what
+    /// `--no-mention-only` without any other flag explicitly asks for.
+    fn subscriptions(&self, since: Timestamp) -> Vec<Filter> {
+        let mut filters = Vec::new();
+
+        if self.mention_only {
+            filters.push(
+                Filter::new()
+                    .kinds(self.kinds.clone())
+                    .pubkey(self.target_pubkey)
+                    .since(since),
+            );
+        }
+        if !self.keywords.is_empty() {
+            // Relays cannot filter by content, so keywords need a kind:1 subscription
+            // that is matched locally in `match_event`.
+            filters.push(Filter::new().kind(Kind::TextNote).since(since));
+        }
+        if !self.authors.is_empty() {
+            filters.push(
+                Filter::new()
+                    .kinds(self.kinds.clone())
+                    .authors(self.authors.clone())
+                    .since(since),
+            );
+        }
+        if filters.is_empty() {
+            filters.push(Filter::new().kinds(self.kinds.clone()).since(since));
+        }
+
+        filters
+    }
+
+    /// Keep an event if it satisfies **any** active condition; keep everything when no
+    /// condition is set. Mirrors `subscriptions` so a relay that over-delivers (or a
+    /// second subscription's traffic) is narrowed back down locally.
+    fn match_event(&self, event: &Event) -> Option<MatchReason> {
+        if self.mention_only && mentions_pubkey(event, &self.target_pubkey) {
+            return Some(MatchReason::Mention);
+        }
+        if let Some(kw) = matched_keyword(&event.content, &self.keywords) {
+            return Some(MatchReason::Keyword(kw));
+        }
+        if self.authors.contains(&event.pubkey) {
+            return Some(MatchReason::Author);
+        }
+        if self.is_narrowed() {
+            None
+        } else {
+            Some(MatchReason::Unfiltered)
+        }
+    }
 }
 
 /// Resolve a display name from kind:0 metadata: prefer display_name, fall back to name,
@@ -123,23 +238,22 @@ pub async fn run(
     };
 
     let own_pubkey = own_keys.public_key();
+    // `--npub` picks the watched pubkey; without it we watch our own. Same for both
+    // output modes.
+    let target_pubkey = match npub_str {
+        Some(pk) => resolve_pubkey(pk)?,
+        None => own_pubkey,
+    };
 
     if json_output {
-        // `--npub` picks the watched pubkey here just like it does for the webhook path;
-        // without it we watch our own.
-        let target_pubkey = match npub_str {
-            Some(pk) => resolve_pubkey(pk)?,
-            None => own_pubkey,
-        };
-        return watch_json(
-            &nostr_client,
-            keywords,
-            extra_kinds,
-            &author_pubkeys,
-            mention_only,
+        let watch_filter = WatchFilter::new(
             target_pubkey,
-        )
-        .await;
+            extra_kinds,
+            mention_only,
+            keywords,
+            &author_pubkeys,
+        );
+        return watch_json(&nostr_client, &watch_filter).await;
     }
     let webhook_url = webhook_url.expect("checked above");
 
@@ -165,46 +279,28 @@ pub async fn run(
 
     // Mention/reply/reaction watch mode (skip if only channel is specified)
     let watching_mentions = channel_id.is_none() || npub_str.is_some();
-    if watching_mentions {
-        let target_pubkey = match npub_str {
-            Some(pk) => resolve_pubkey(pk)?,
-            None => own_keys.public_key(),
-        };
 
-        let target_npub = target_pubkey.to_bech32()?;
-        println!("Watching for events targeting {}...", target_npub);
+    // Exactly the same filter the --json path builds. `--channel` on its own watches no
+    // mentions, so the p-tag condition is dropped there; if nothing else is configured we
+    // stay on the channel subscription alone instead of opening a general one.
+    let watch_filter = if watching_mentions || !keywords.is_empty() || !author_pubkeys.is_empty() {
+        Some(WatchFilter::new(
+            target_pubkey,
+            extra_kinds,
+            mention_only && watching_mentions,
+            keywords,
+            &author_pubkeys,
+        ))
+    } else {
+        None
+    };
+
+    if let Some(ref watch_filter) = watch_filter {
         println!("Webhook: {}", webhook_url);
+        describe_filter(watch_filter)?;
         println!("Press Ctrl+C to stop.\n");
-
-        if extra_kinds.is_empty() {
-            // Default behavior: kind:1 + kind:7 with p-tag filter
-            let filter = Filter::new()
-                .pubkey(target_pubkey)
-                .kinds(vec![Kind::TextNote, Kind::Reaction])
-                .since(Timestamp::now());
+        for filter in watch_filter.subscriptions(Timestamp::now()) {
             nostr_client.subscribe(filter, None).await?;
-        } else {
-            // Custom kinds subscription
-            let kinds_vec: Vec<Kind> = extra_kinds.iter().map(|&k| Kind::from(k)).collect();
-            let mut filter = Filter::new().kinds(kinds_vec).since(Timestamp::now());
-            if mention_only {
-                filter = filter.pubkey(target_pubkey);
-            }
-            nostr_client.subscribe(filter, None).await?;
-            println!(
-                "Custom kinds: {:?}, mention_only: {}",
-                extra_kinds, mention_only
-            );
-        }
-    }
-
-    // Keyword watch mode (local matching on existing relays)
-    if !keywords.is_empty() {
-        // Subscribe to all kind:1 events since now; keyword matching is done locally
-        let filter = Filter::new().kind(Kind::TextNote).since(Timestamp::now());
-        nostr_client.subscribe(filter, None).await?;
-        for keyword in keywords {
-            println!("Watching keyword: {}", keyword);
         }
     }
 
@@ -219,13 +315,20 @@ pub async fn run(
                 continue;
             }
 
-            if !author_pubkeys.is_empty() && !author_pubkeys.contains(&event.pubkey) {
-                continue;
-            }
-
             if event.pubkey == own_pubkey && event.kind != Kind::ChannelMessage {
                 continue;
             }
+
+            // Channel messages are selected by the channel subscription below; everything
+            // else goes through the shared filter, exactly as in --json mode.
+            let reason = if event.kind == Kind::ChannelMessage && watching_channel.is_some() {
+                None
+            } else {
+                match watch_filter.as_ref().and_then(|f| f.match_event(&event)) {
+                    Some(reason) => Some(reason),
+                    None => continue,
+                }
+            };
 
             let (sender_name, sender_avatar) =
                 get_profile_info(&nostr_client, &event.pubkey, &mut profile_cache).await;
@@ -261,11 +364,12 @@ pub async fn run(
                         continue;
                     }
                 }
-                Kind::TextNote => {
-                    let is_mention_or_reply = watching_mentions
-                        && (!mention_only || mentions_pubkey(&event, &own_pubkey));
-
-                    if is_mention_or_reply {
+                Kind::TextNote => match reason {
+                    Some(MatchReason::Keyword(ref kw)) => format!(
+                        "🔍 **keyword match: {}**\n{}\n> {}\nnote: {}",
+                        kw, sender_name, event.content, note_id
+                    ),
+                    _ => {
                         let has_e_tag = event.tags.iter().any(|t| {
                             matches!(t.as_standardized(), Some(TagStandard::Event { .. }))
                         });
@@ -278,22 +382,8 @@ pub async fn run(
                             "📩 **{}** from {}\n> {}\n🔗 {}",
                             label, sender_name, event.content, note_id
                         )
-                    } else if !keywords.is_empty() {
-                        let matched_keyword = keywords
-                            .iter()
-                            .find(|kw| event.content.to_lowercase().contains(&kw.to_lowercase()));
-                        if let Some(kw) = matched_keyword {
-                            format!(
-                                "🔍 **keyword match: {}**\n{}\n> {}\nnote: {}",
-                                kw, sender_name, event.content, note_id
-                            )
-                        } else {
-                            continue;
-                        }
-                    } else {
-                        continue;
                     }
-                }
+                },
                 Kind::Reaction => {
                     let emoji = if event.content.is_empty() {
                         "👍"
@@ -463,82 +553,56 @@ struct JsonEvent {
     tags: Tags,
 }
 
-/// Decides whether a received event should be emitted by the `--json` loop.
-///
-/// Mirrors the webhook path's OR semantics: an event is kept when it targets us (carries
-/// a `p` tag for `target_pubkey`) **or** when it matches one of the watched keywords.
-/// When the p-tag filter is disabled (`--no-mention-only` with explicit `--kind`s) every
-/// event of the subscribed kinds is kept, exactly as the webhook path does.
-fn json_event_matches(
-    event: &Event,
-    target_pubkey: &PublicKey,
-    keywords: &[String],
-    mention_filter_active: bool,
-) -> bool {
-    if !mention_filter_active {
-        return true;
+/// Prints the active filter on stdout (webhook mode). The `--json` path prints the same
+/// lines on stderr instead, so its stdout stays pure JSONL.
+fn describe_filter(filter: &WatchFilter) -> Result<()> {
+    for line in filter_description(filter)? {
+        println!("{}", line);
     }
-    mentions_pubkey(event, target_pubkey) || matches_keyword(&event.content, keywords)
+    Ok(())
 }
 
-/// Generic, output-agnostic watch loop for consumers like OpenCrab: subscribes to events
-/// targeting `target_pubkey` (p tag) plus, when keywords are configured, to kind:1 for
-/// local keyword matching, and prints one JSON object per matched event to stdout
-/// (JSONL). All progress/diagnostic output goes to stderr so stdout stays pure JSONL.
-async fn watch_json(
-    nostr_client: &Client,
-    keywords: &[String],
-    extra_kinds: &[u16],
-    author_pubkeys: &[PublicKey],
-    mention_only: bool,
-    target_pubkey: PublicKey,
-) -> Result<()> {
-    // Default (no --kind): kind:1 + kind:7, so mentions, replies and reactions all
-    // arrive — same default as the webhook path.
-    let kinds_to_use: Vec<Kind> = if extra_kinds.is_empty() {
-        vec![Kind::TextNote, Kind::Reaction]
-    } else {
-        extra_kinds.iter().map(|&k| Kind::from(k)).collect()
-    };
-    // With the default kinds the p-tag filter is always on; with explicit kinds it
-    // follows --mention-only / --no-mention-only, mirroring the webhook path.
-    let mention_filter_active = extra_kinds.is_empty() || mention_only;
+/// Human-readable summary of what we subscribed to. Shared by both output modes so the
+/// diagnostics can never drift from each other.
+fn filter_description(filter: &WatchFilter) -> Result<Vec<String>> {
+    let mut lines = vec![format!(
+        "Kinds: {:?}",
+        filter.kinds.iter().map(|k| k.as_u16()).collect::<Vec<_>>()
+    )];
+    if filter.mention_only {
+        lines.push(format!(
+            "Watching mentions of: {}",
+            filter.target_pubkey.to_bech32()?
+        ));
+    }
+    if !filter.authors.is_empty() {
+        lines.push(format!("Authors: {}", filter.authors.len()));
+    }
+    if !filter.keywords.is_empty() {
+        lines.push(format!("Keywords: {:?}", filter.keywords));
+    }
+    if !filter.is_narrowed() {
+        lines.push(
+            "WARNING: no mention/keyword/author filter - every event of these kinds is matched"
+                .to_string(),
+        );
+    }
+    Ok(lines)
+}
 
-    eprintln!(
-        "Watching (JSON mode) events targeting {}, kinds: {:?}",
-        target_pubkey.to_bech32()?,
-        kinds_to_use.iter().map(|k| k.as_u16()).collect::<Vec<_>>()
-    );
-    if !mention_filter_active {
-        eprintln!("mention_only: false (all events of the watched kinds)");
-    }
-    if !author_pubkeys.is_empty() {
-        eprintln!("Authors: {}", author_pubkeys.len());
-    }
-    if !keywords.is_empty() {
-        eprintln!("Keywords: {:?}", keywords);
+/// Output-agnostic watch loop for consumers like OpenCrab: subscribes through the shared
+/// [`WatchFilter`] (identical to the webhook path) and prints one JSON object per matched
+/// event to stdout (JSONL). All progress/diagnostic output goes to stderr so stdout stays
+/// pure JSONL.
+async fn watch_json(nostr_client: &Client, watch_filter: &WatchFilter) -> Result<()> {
+    eprintln!("Watching (JSON mode)");
+    for line in filter_description(watch_filter)? {
+        eprintln!("{}", line);
     }
     eprintln!("Press Ctrl+C to stop.\n");
 
-    // Subscription 1: events targeting us (p tag). This is what makes e/p-tag-only
-    // replies — which carry no npub in their content — show up at all.
-    let mut mention_filter = Filter::new().kinds(kinds_to_use).since(Timestamp::now());
-    if mention_filter_active {
-        mention_filter = mention_filter.pubkey(target_pubkey);
-    }
-    if !author_pubkeys.is_empty() {
-        mention_filter = mention_filter.authors(author_pubkeys.to_vec());
-    }
-    nostr_client.subscribe(mention_filter, None).await?;
-
-    // Subscription 2: kind:1 for local keyword matching, only when keywords are given.
-    // Without keywords we stay narrowly subscribed and never open a firehose.
-    if !keywords.is_empty() && mention_filter_active {
-        let mut keyword_filter = Filter::new().kind(Kind::TextNote).since(Timestamp::now());
-        if !author_pubkeys.is_empty() {
-            keyword_filter = keyword_filter.authors(author_pubkeys.to_vec());
-        }
-        nostr_client.subscribe(keyword_filter, None).await?;
+    for filter in watch_filter.subscriptions(Timestamp::now()) {
+        nostr_client.subscribe(filter, None).await?;
     }
 
     let mut dedup = EventDeduplicator::new();
@@ -551,11 +615,7 @@ async fn watch_json(
                 continue;
             }
 
-            if !author_pubkeys.is_empty() && !author_pubkeys.contains(&event.pubkey) {
-                continue;
-            }
-
-            if !json_event_matches(&event, &target_pubkey, keywords, mention_filter_active) {
+            if watch_filter.match_event(&event).is_none() {
                 continue;
             }
 
@@ -678,70 +738,314 @@ async fn send_discord_webhook(
 mod tests {
     use super::*;
 
-    fn note(content: &str, tags: Vec<Tag>) -> Event {
-        let keys = Keys::generate();
+    fn note_from(keys: &Keys, content: &str, tags: Vec<Tag>) -> Event {
         EventBuilder::text_note(content)
             .tags(tags)
-            .sign_with_keys(&keys)
+            .sign_with_keys(keys)
             .expect("sign")
     }
 
+    fn note(content: &str, tags: Vec<Tag>) -> Event {
+        note_from(&Keys::generate(), content, tags)
+    }
+
+    fn reaction_to(target: &PublicKey) -> Event {
+        EventBuilder::new(Kind::Reaction, "+")
+            .tags(vec![Tag::public_key(*target)])
+            .sign_with_keys(&Keys::generate())
+            .expect("sign")
+    }
+
+    fn has_p_tag(filter: &Filter) -> bool {
+        filter
+            .generic_tags
+            .contains_key(&SingleLetterTag::lowercase(Alphabet::P))
+    }
+
+    /// Default `watch` invocation: no --kind, no --keyword, no --author.
+    fn mention_filter(target: PublicKey) -> WatchFilter {
+        WatchFilter::new(target, &[], true, &[], &[])
+    }
+
+    // --- kinds ---------------------------------------------------------------
+
     #[test]
-    fn p_tag_reply_matches_without_keyword_in_content() {
+    fn default_kinds_cover_notes_and_reactions() {
         let me = Keys::generate().public_key();
-        // An e/p-tag-only reply: nothing in the content hints at the target.
+        assert_eq!(
+            mention_filter(me).kinds,
+            vec![Kind::TextNote, Kind::Reaction]
+        );
+        // --kind wins when given.
+        assert_eq!(
+            WatchFilter::new(me, &[1, 9735], true, &[], &[]).kinds,
+            vec![Kind::TextNote, Kind::from(9735u16)]
+        );
+    }
+
+    // --- p tag ---------------------------------------------------------------
+
+    #[test]
+    fn p_tag_reply_matches_without_any_hint_in_content() {
+        let me = Keys::generate().public_key();
+        // An e/p-tag-only reply: nothing in the content names the target.
         let event = note("thanks!", vec![Tag::public_key(me)]);
-        assert!(mentions_pubkey(&event, &me));
-        assert!(json_event_matches(&event, &me, &[], true));
+        assert_eq!(
+            mention_filter(me).match_event(&event),
+            Some(MatchReason::Mention)
+        );
     }
 
     #[test]
-    fn keyword_match_without_p_tag_is_kept() {
+    fn reaction_targeting_us_matches() {
         let me = Keys::generate().public_key();
-        let event = note("I love Nostr", vec![]);
-        assert!(!mentions_pubkey(&event, &me));
-        assert!(json_event_matches(
-            &event,
-            &me,
-            &["nostr".to_string()],
-            true
-        ));
+        let event = reaction_to(&me);
+        assert_eq!(event.kind, Kind::Reaction);
+        assert_eq!(
+            mention_filter(me).match_event(&event),
+            Some(MatchReason::Mention)
+        );
     }
 
     #[test]
-    fn unrelated_event_is_dropped() {
-        let me = Keys::generate().public_key();
-        let event = note("good morning", vec![]);
-        assert!(!json_event_matches(
-            &event,
-            &me,
-            &["nostr".to_string()],
-            true
-        ));
-        assert!(!json_event_matches(&event, &me, &[], true));
-    }
-
-    #[test]
-    fn p_tag_for_someone_else_is_not_a_mention() {
+    fn events_for_someone_else_do_not_match() {
         let me = Keys::generate().public_key();
         let other = Keys::generate().public_key();
-        let event = note("hi", vec![Tag::public_key(other)]);
-        assert!(!mentions_pubkey(&event, &me));
-        assert!(!json_event_matches(&event, &me, &[], true));
+        assert!(mention_filter(me)
+            .match_event(&note("hi", vec![Tag::public_key(other)]))
+            .is_none());
+        assert!(mention_filter(me)
+            .match_event(&reaction_to(&other))
+            .is_none());
+        assert!(mention_filter(me)
+            .match_event(&note("hi", vec![]))
+            .is_none());
+    }
+
+    // --- keyword --------------------------------------------------------------
+
+    #[test]
+    fn keyword_matches_without_a_p_tag() {
+        let me = Keys::generate().public_key();
+        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[]);
+        assert_eq!(
+            filter.match_event(&note("I love Nostr", vec![])),
+            Some(MatchReason::Keyword("nostr".to_string()))
+        );
+        assert!(filter.match_event(&note("I love coffee", vec![])).is_none());
     }
 
     #[test]
-    fn disabled_mention_filter_keeps_everything() {
+    fn keyword_and_p_tag_are_both_matched_by_one_filter() {
+        // The regression that started this: keyword watching must not cost us p-tag
+        // replies, and vice versa.
         let me = Keys::generate().public_key();
-        let event = note("unrelated chatter", vec![]);
-        assert!(json_event_matches(&event, &me, &[], false));
+        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[]);
+        assert_eq!(
+            filter.match_event(&note("no keyword here", vec![Tag::public_key(me)])),
+            Some(MatchReason::Mention)
+        );
+        assert_eq!(
+            filter.match_event(&note("about nostr", vec![])),
+            Some(MatchReason::Keyword("nostr".to_string()))
+        );
     }
 
     #[test]
     fn keyword_matching_is_case_insensitive() {
-        assert!(matches_keyword("Hello NOSTR world", &["nostr".to_string()]));
-        assert!(matches_keyword("hello nostr", &["NOSTR".to_string()]));
-        assert!(!matches_keyword("hello", &["nostr".to_string()]));
-        assert!(!matches_keyword("hello", &[]));
+        assert_eq!(
+            matched_keyword("Hello NOSTR world", &["nostr".to_string()]),
+            Some("nostr".to_string())
+        );
+        assert_eq!(
+            matched_keyword("hello nostr", &["NOSTR".to_string()]),
+            Some("NOSTR".to_string())
+        );
+        assert_eq!(matched_keyword("hello", &["nostr".to_string()]), None);
+        assert_eq!(matched_keyword("hello", &[]), None);
+    }
+
+    // --- author ---------------------------------------------------------------
+
+    #[test]
+    fn author_matches_plain_posts_with_no_p_tag() {
+        // `--author=X --kind=1`, what OpenCrab sends: every post by X must come through.
+        let me = Keys::generate().public_key();
+        let watched = Keys::generate();
+        let filter = WatchFilter::new(me, &[1], true, &[], &[watched.public_key()]);
+        assert_eq!(
+            filter.match_event(&note_from(&watched, "just a regular post", vec![])),
+            Some(MatchReason::Author)
+        );
+        assert!(filter
+            .match_event(&note("post by a stranger", vec![]))
+            .is_none());
+    }
+
+    #[test]
+    fn author_watching_keeps_mentions_and_keywords_too() {
+        let me = Keys::generate().public_key();
+        let watched = Keys::generate();
+        let filter = WatchFilter::new(
+            me,
+            &[1],
+            true,
+            &["nostr".to_string()],
+            &[watched.public_key()],
+        );
+        assert_eq!(
+            filter.match_event(&note_from(&watched, "anything", vec![])),
+            Some(MatchReason::Author)
+        );
+        assert_eq!(
+            filter.match_event(&note("hey", vec![Tag::public_key(me)])),
+            Some(MatchReason::Mention)
+        );
+        assert_eq!(
+            filter.match_event(&note("about nostr", vec![])),
+            Some(MatchReason::Keyword("nostr".to_string()))
+        );
+        assert!(filter.match_event(&note("unrelated", vec![])).is_none());
+    }
+
+    // --- no narrowing at all ---------------------------------------------------
+
+    #[test]
+    fn no_condition_at_all_matches_everything() {
+        // `--kind 1 --no-mention-only` with nothing else: explicitly asking for all of it.
+        let me = Keys::generate().public_key();
+        let filter = WatchFilter::new(me, &[1], false, &[], &[]);
+        assert!(!filter.is_narrowed());
+        assert_eq!(
+            filter.match_event(&note("anything at all", vec![])),
+            Some(MatchReason::Unfiltered)
+        );
+    }
+
+    #[test]
+    fn no_mention_only_still_honours_keywords() {
+        // `--kind 1 --no-mention-only --keyword foo` stays keyword-filtered instead of
+        // degrading into a kind:1 firehose.
+        let me = Keys::generate().public_key();
+        let filter = WatchFilter::new(me, &[1], false, &["foo".to_string()], &[]);
+        assert!(filter.is_narrowed());
+        assert_eq!(
+            filter.match_event(&note("has foo inside", vec![])),
+            Some(MatchReason::Keyword("foo".to_string()))
+        );
+        assert!(filter.match_event(&note("nothing here", vec![])).is_none());
+        // p tags no longer count once --no-mention-only is given.
+        assert!(filter
+            .match_event(&note("nothing here", vec![Tag::public_key(me)]))
+            .is_none());
+    }
+
+    // --- subscriptions ----------------------------------------------------------
+
+    #[test]
+    fn one_subscription_per_active_condition() {
+        let me = Keys::generate().public_key();
+        let author = Keys::generate().public_key();
+        let now = Timestamp::now();
+
+        // p tag only.
+        let subs = mention_filter(me).subscriptions(now);
+        assert_eq!(subs.len(), 1);
+        assert!(has_p_tag(&subs[0]));
+
+        // p tag + keyword: the keyword one is an un-narrowed kind:1, matched locally.
+        let subs = WatchFilter::new(me, &[], true, &["foo".to_string()], &[]).subscriptions(now);
+        assert_eq!(subs.len(), 2);
+        assert!(has_p_tag(&subs[0]));
+        assert!(!has_p_tag(&subs[1]));
+        assert_eq!(subs[1].kinds, Some([Kind::TextNote].into_iter().collect()));
+
+        // p tag + author: the author subscription must not be p-tag narrowed, or
+        // "follow everything X posts" collapses to "X's replies to me".
+        let subs = WatchFilter::new(me, &[1], true, &[], &[author]).subscriptions(now);
+        assert_eq!(subs.len(), 2);
+        assert!(has_p_tag(&subs[0]));
+        assert!(!has_p_tag(&subs[1]));
+        assert_eq!(subs[1].authors, Some([author].into_iter().collect()));
+    }
+
+    #[test]
+    fn without_keywords_no_bare_kind1_subscription_is_opened() {
+        let me = Keys::generate().public_key();
+        let subs = mention_filter(me).subscriptions(Timestamp::now());
+        assert!(
+            subs.iter().all(has_p_tag),
+            "a kind:1 subscription with no narrowing would be a firehose"
+        );
+    }
+
+    #[test]
+    fn unnarrowed_filter_subscribes_to_the_bare_kinds() {
+        let me = Keys::generate().public_key();
+        let subs = WatchFilter::new(me, &[1], false, &[], &[]).subscriptions(Timestamp::now());
+        assert_eq!(subs.len(), 1);
+        assert!(!has_p_tag(&subs[0]));
+        assert_eq!(subs[0].authors, None);
+    }
+
+    // --- both output modes share the filter --------------------------------------
+
+    #[test]
+    fn webhook_and_json_modes_build_identical_filters() {
+        // `run` builds the WatchFilter from the same arguments for both modes; the only
+        // difference is where a matched event is written. Guard that the inputs a webhook
+        // run uses (watching_mentions = true) produce the same subscriptions and verdicts.
+        let me = Keys::generate().public_key();
+        let author = Keys::generate();
+        let args_kinds = [1u16];
+        let keywords = ["foo".to_string()];
+        let authors = [author.public_key()];
+
+        // Both modes pass mention_only through unchanged (the webhook path additionally
+        // ANDs in `watching_mentions`, which is true whenever --channel is not the only
+        // thing being watched).
+        let mention_only = true;
+        let watching_mentions = true;
+        let json_filter = WatchFilter::new(me, &args_kinds, mention_only, &keywords, &authors);
+        let webhook_filter = WatchFilter::new(
+            me,
+            &args_kinds,
+            mention_only && watching_mentions,
+            &keywords,
+            &authors,
+        );
+
+        let now = Timestamp::now();
+        assert_eq!(
+            json_filter.subscriptions(now).len(),
+            webhook_filter.subscriptions(now).len()
+        );
+        for event in [
+            note("reply", vec![Tag::public_key(me)]),
+            note("has foo", vec![]),
+            note_from(&author, "by watched author", vec![]),
+            note("nothing", vec![]),
+        ] {
+            assert_eq!(
+                json_filter.match_event(&event),
+                webhook_filter.match_event(&event)
+            );
+        }
+    }
+
+    /// `--channel` alone watches no mentions, so the p-tag condition is dropped there.
+    #[test]
+    fn channel_only_run_drops_the_mention_condition() {
+        let me = Keys::generate().public_key();
+        // `mention_only && watching_mentions` with watching_mentions = false.
+        let filter = WatchFilter::new(me, &[], false, &["foo".to_string()], &[]);
+        assert!(!filter.mention_only);
+        assert!(filter
+            .match_event(&note("hi", vec![Tag::public_key(me)]))
+            .is_none());
+        assert_eq!(
+            filter.match_event(&note("has foo", vec![])),
+            Some(MatchReason::Keyword("foo".to_string()))
+        );
     }
 }
