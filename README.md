@@ -218,7 +218,7 @@ nostaro watch --json --keyword nostr
 - Uses kind:0 profile metadata (icon, display name) for webhook avatar
 - Runs continuously — ideal for background monitoring
 
-> **Upgrading from an earlier version — three defaults changed:**
+> **Upgrading from an earlier version — six behaviour changes:**
 >
 > 1. **`--author` is now an OR condition, not an exclusive scope.** It used to drop
 >    everything not written by those authors; now, with the default `--match any`, your
@@ -229,6 +229,14 @@ nostaro watch --json --keyword nostr
 >    relays, which for `--webhook` is a firehose into Discord.
 > 3. **`--json` now defaults to mention-only.** It used to subscribe to every kind:1
 >    event; if you relied on that, pass `--no-mention-only` explicitly.
+> 4. **`--json` now defaults to kind:1 *and* kind:7.** It used to watch kind:1 only, so
+>    JSON consumers that pass no `--kind` will start seeing reaction events. Pass
+>    `--kind 1` to keep the old stream.
+> 5. **`--json` no longer echoes your own events back at you.** The webhook mode always
+>    dropped them; JSON mode did not. Pass `--author <your own npub>` if you want your own
+>    posts in the stream.
+> 6. **`--mention-only` and `--no-mention-only` together are now a parse error.** They
+>    used to be accepted, with the last one silently winning. Pass only one.
 
 ### Event (Custom Kind)
 

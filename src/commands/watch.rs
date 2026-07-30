@@ -166,6 +166,21 @@ fn build_watch_filter(
     }
 }
 
+/// Whether mentions are watched at all. False only when `--channel` is the sole thing
+/// being watched: there is no mention target then. `--json` rejects `--channel`, so this
+/// is always true in JSON mode — both output modes reach [`build_watch_filter`] through
+/// the same derivation.
+fn watching_mentions(channel_id: Option<&str>, npub_str: Option<&str>) -> bool {
+    channel_id.is_none() || npub_str.is_some()
+}
+
+/// Whether to open the general (non-channel) subscriptions. Watching a channel alone
+/// needs none: the channel subscription supplies the events and `--author` is applied to
+/// them locally.
+fn opens_general_subscriptions(watching_mentions: bool, keywords: &[String]) -> bool {
+    watching_mentions || !keywords.is_empty()
+}
+
 /// The effective `--mention-only` value. `--no-mention-only` turns the p-tag condition
 /// off; without it the condition is on. Lives here (rather than inline in `main`) so the
 /// derivation is testable and cannot silently change.
@@ -320,7 +335,6 @@ impl WatchFilter {
 fn text_note_label(reason: Option<&MatchReason>, has_e_tag: bool) -> (&'static str, &'static str) {
     match reason {
         Some(MatchReason::Author) | Some(MatchReason::Unfiltered) => ("📝", "投稿"),
-        Some(MatchReason::Keyword(_)) => ("🔍", "keyword match"),
         _ if has_e_tag => ("📩", "リプライ"),
         _ => ("📩", "メンション"),
     }
@@ -377,10 +391,9 @@ pub async fn run(
         Some(pk) => resolve_pubkey(pk)?,
         None => own_pubkey,
     };
-    // False only when `--channel` is the sole thing being watched: there is no mention
-    // target then. Computed before the --json branch so both modes build the filter from
-    // exactly the same inputs.
-    let watching_mentions = channel_id.is_none() || npub_str.is_some();
+    // Computed before the --json branch so both modes build the filter from exactly the
+    // same inputs.
+    let watching_mentions = watching_mentions(channel_id, npub_str);
 
     let watch_filter = build_watch_filter(
         own_pubkey,
@@ -400,10 +413,7 @@ pub async fn run(
 
     // Channel watch mode
     let watching_channel = channel_id.map(|s| s.to_string());
-    // `--channel` alone needs no general subscription: the channel subscription supplies
-    // the events and `--author` is applied to them locally, as it was before the filter
-    // was unified.
-    let general_watch = watching_mentions || !keywords.is_empty();
+    let general_watch = opens_general_subscriptions(watching_mentions, keywords);
 
     println!("Webhook: {}", webhook_url);
 
@@ -1433,45 +1443,35 @@ mod tests {
         assert_eq!(any.subscriptions(now).len(), 3);
     }
 
-    // --- both output modes share the filter --------------------------------------
+    // --- run() wiring ------------------------------------------------------------
 
     #[test]
-    fn json_and_webhook_go_through_the_same_builder() {
-        // `run` computes `watching_mentions` before the --json branch and calls
-        // `build_watch_filter` once, so both modes get byte-identical filters. This test
-        // guards that the builder is the only source of truth: same inputs in, same
-        // subscriptions and same verdicts out.
-        let me = Keys::generate().public_key();
-        let author = Keys::generate();
-        let args = || {
-            Args::new(me)
-                .kinds(&[1])
-                .keywords(&["foo"])
-                .authors(&[author.public_key()])
-        };
-        let json_filter = args().build();
-        let webhook_filter = args().build();
+    fn json_mode_always_watches_mentions() {
+        // `run` derives this once, before the --json branch, and hands it to the single
+        // `build_watch_filter` call both modes share. --json rejects --channel, so the
+        // derivation cannot come out false there.
+        assert!(watching_mentions(None, None));
+        assert!(watching_mentions(None, Some("npub1example")));
+    }
 
-        let now = Timestamp::now();
-        let json_subs = json_filter.subscriptions(now);
-        let webhook_subs = webhook_filter.subscriptions(now);
-        assert_eq!(json_subs.len(), webhook_subs.len());
-        for (a, b) in json_subs.iter().zip(webhook_subs.iter()) {
-            assert_eq!(kinds_of(a), kinds_of(b));
-            assert_eq!(a.authors, b.authors);
-            assert_eq!(p_tag_targets(a), p_tag_targets(b));
-        }
-        for event in [
-            note("reply", vec![Tag::public_key(me)]),
-            note("has foo", vec![]),
-            note_from(&author, "by watched author", vec![]),
-            note("nothing", vec![]),
-        ] {
-            assert_eq!(
-                json_filter.match_event(&event),
-                webhook_filter.match_event(&event)
-            );
-        }
+    #[test]
+    fn channel_alone_watches_no_mentions() {
+        assert!(!watching_mentions(Some("cafe"), None));
+        // ...but --channel together with --npub does watch mentions.
+        assert!(watching_mentions(Some("cafe"), Some("npub1example")));
+    }
+
+    #[test]
+    fn channel_alone_opens_no_general_subscriptions() {
+        // The channel subscription supplies the events; --author is applied locally.
+        assert!(!opens_general_subscriptions(false, &[]));
+        assert!(!opens_general_subscriptions(
+            watching_mentions(Some("cafe"), None),
+            &[]
+        ));
+        // Keywords still need their own subscription even alongside a channel.
+        assert!(opens_general_subscriptions(false, &["foo".to_string()]));
+        assert!(opens_general_subscriptions(true, &[]));
     }
 
     /// `--channel` alone watches no mentions, so the p-tag condition is dropped there.
