@@ -170,11 +170,16 @@ enum Commands {
         #[arg(long, default_value_t = true)]
         mention_only: bool,
         /// Disable mention-only mode (receive all events of watched kinds)
-        #[arg(long, action = clap::ArgAction::SetFalse, overrides_with = "mention_only")]
+        #[arg(long, conflicts_with = "mention_only")]
         no_mention_only: bool,
         /// Only receive events from these authors, npub or hex (can be specified multiple times)
         #[arg(long = "author")]
         authors: Vec<String>,
+        /// How to combine the mention/keyword/author conditions: "any" keeps events matching
+        /// at least one of them (default), "all" requires all of them
+        /// (e.g. --author X --keyword foo --match all = posts by X that also contain "foo")
+        #[arg(long = "match", value_enum, default_value_t = commands::watch::MatchMode::Any)]
+        match_mode: commands::watch::MatchMode,
         /// Connect only to these relays, ignoring the config's relay list (can be specified multiple times)
         #[arg(long = "relay")]
         relays: Vec<String>,
@@ -456,7 +461,9 @@ async fn main() -> anyhow::Result<()> {
             keywords,
             kinds,
             mention_only,
+            no_mention_only,
             authors,
+            match_mode,
             relays,
             json,
             ..
@@ -467,10 +474,11 @@ async fn main() -> anyhow::Result<()> {
                 channel.as_deref(),
                 &keywords,
                 &kinds,
-                mention_only,
+                mention_only && !no_mention_only,
                 &authors,
                 &relays,
                 json,
+                match_mode,
             )
             .await?
         }
@@ -508,6 +516,65 @@ mod tests {
         .unwrap();
         if let Commands::Watch { kinds, .. } = cli.command {
             assert_eq!(kinds, vec![1u16, 9735u16, 7u16]);
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_no_mention_only_turns_the_p_tag_condition_off() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--json", "--no-mention-only"]).unwrap();
+        if let Commands::Watch {
+            mention_only,
+            no_mention_only,
+            ..
+        } = cli.command
+        {
+            // `mention_only` keeps its default; the effective value is the conjunction,
+            // which is what `run` is given.
+            assert!(no_mention_only);
+            let effective = mention_only && !no_mention_only;
+            assert!(!effective, "--no-mention-only must turn the condition off");
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_mention_only_defaults_on() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--json"]).unwrap();
+        if let Commands::Watch {
+            mention_only,
+            no_mention_only,
+            ..
+        } = cli.command
+        {
+            let effective = mention_only && !no_mention_only;
+            assert!(effective, "the p-tag condition is on by default");
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_match_mode_defaults_to_any() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--json"]).unwrap();
+        if let Commands::Watch { match_mode, .. } = cli.command {
+            assert_eq!(match_mode, commands::watch::MatchMode::Any);
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_match_mode_all_is_accepted() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--json", "--match", "all"]).unwrap();
+        if let Commands::Watch { match_mode, .. } = cli.command {
+            assert_eq!(match_mode, commands::watch::MatchMode::All);
         } else {
             panic!("wrong command");
         }

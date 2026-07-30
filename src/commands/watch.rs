@@ -94,11 +94,24 @@ enum MatchReason {
     Unfiltered,
 }
 
+/// How the mention / keyword / author conditions are combined (`--match`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum MatchMode {
+    /// Keep an event that satisfies **any** condition (default): mentions of us, keyword
+    /// hits and posts by watched authors all come through.
+    #[default]
+    Any,
+    /// Keep only events that satisfy **every** configured condition, e.g.
+    /// `--author X --keyword foo --match all` = posts by X that also contain "foo".
+    All,
+}
+
 /// What `watch` subscribes to and which received events it keeps.
 ///
 /// Built straight from the command-line arguments (`--npub`, `--kind`, `--keyword`,
-/// `--author`, `--mention-only`) and used by **both** output modes: `--json` and the
-/// Discord webhook differ only in where a matched event goes, never in what is matched.
+/// `--author`, `--mention-only`, `--match`) and used by **both** output modes: `--json`
+/// and the Discord webhook differ only in where a matched event goes, never in what is
+/// matched.
 struct WatchFilter {
     /// Pubkey watched via `p` tags — `--npub` or, by default, our own.
     target_pubkey: PublicKey,
@@ -109,6 +122,8 @@ struct WatchFilter {
     mention_only: bool,
     keywords: Vec<String>,
     authors: Vec<PublicKey>,
+    /// Whether the conditions above are OR'd (`any`) or AND'd (`all`).
+    match_mode: MatchMode,
 }
 
 impl WatchFilter {
@@ -118,6 +133,7 @@ impl WatchFilter {
         mention_only: bool,
         keywords: &[String],
         authors: &[PublicKey],
+        match_mode: MatchMode,
     ) -> Self {
         let kinds = if extra_kinds.is_empty() {
             vec![Kind::TextNote, Kind::Reaction]
@@ -130,6 +146,7 @@ impl WatchFilter {
             mention_only,
             keywords: keywords.to_vec(),
             authors: authors.to_vec(),
+            match_mode,
         }
     }
 
@@ -138,11 +155,27 @@ impl WatchFilter {
         self.mention_only || !self.keywords.is_empty() || !self.authors.is_empty()
     }
 
-    /// One relay subscription per active condition, so the relay itself delivers the
-    /// union: events targeting us, events containing a keyword, events by a watched
-    /// author. With no condition at all we subscribe to the bare kinds, which is what
+    /// The relay subscriptions needed to see every event `match_event` could keep.
+    ///
+    /// - `--match any`: one subscription per condition, so the relay delivers the union.
+    /// - `--match all`: a single subscription combining the conditions a relay can
+    ///   evaluate (kinds + `p` tag + authors). Keywords are never part of it — relays
+    ///   cannot filter by content — so they stay a local check in `match_event`.
+    ///
+    /// With no condition at all we subscribe to the bare kinds, which is what
     /// `--no-mention-only` without any other flag explicitly asks for.
     fn subscriptions(&self, since: Timestamp) -> Vec<Filter> {
+        if self.match_mode == MatchMode::All {
+            let mut filter = Filter::new().kinds(self.kinds.clone()).since(since);
+            if self.mention_only {
+                filter = filter.pubkey(self.target_pubkey);
+            }
+            if !self.authors.is_empty() {
+                filter = filter.authors(self.authors.clone());
+            }
+            return vec![filter];
+        }
+
         let mut filters = Vec::new();
 
         if self.mention_only {
@@ -173,10 +206,21 @@ impl WatchFilter {
         filters
     }
 
-    /// Keep an event if it satisfies **any** active condition; keep everything when no
-    /// condition is set. Mirrors `subscriptions` so a relay that over-delivers (or a
-    /// second subscription's traffic) is narrowed back down locally.
+    /// Whether to keep `event`, and why. Mirrors `subscriptions` so a relay that
+    /// over-delivers (or another subscription's traffic) is narrowed back down locally.
+    /// With no condition configured everything is kept, in both match modes.
     fn match_event(&self, event: &Event) -> Option<MatchReason> {
+        if !self.is_narrowed() {
+            return Some(MatchReason::Unfiltered);
+        }
+        match self.match_mode {
+            MatchMode::Any => self.match_any(event),
+            MatchMode::All => self.match_all(event),
+        }
+    }
+
+    /// OR: the first condition that holds decides.
+    fn match_any(&self, event: &Event) -> Option<MatchReason> {
         if self.mention_only && mentions_pubkey(event, &self.target_pubkey) {
             return Some(MatchReason::Mention);
         }
@@ -186,10 +230,30 @@ impl WatchFilter {
         if self.authors.contains(&event.pubkey) {
             return Some(MatchReason::Author);
         }
-        if self.is_narrowed() {
+        None
+    }
+
+    /// AND: every configured condition must hold. The reported reason follows the same
+    /// precedence as `match_any` so the webhook labels events identically in both modes.
+    fn match_all(&self, event: &Event) -> Option<MatchReason> {
+        if self.mention_only && !mentions_pubkey(event, &self.target_pubkey) {
+            return None;
+        }
+        let keyword = if self.keywords.is_empty() {
             None
         } else {
-            Some(MatchReason::Unfiltered)
+            Some(matched_keyword(&event.content, &self.keywords)?)
+        };
+        if !self.authors.is_empty() && !self.authors.contains(&event.pubkey) {
+            return None;
+        }
+
+        if self.mention_only {
+            Some(MatchReason::Mention)
+        } else if let Some(kw) = keyword {
+            Some(MatchReason::Keyword(kw))
+        } else {
+            Some(MatchReason::Author)
         }
     }
 }
@@ -215,6 +279,7 @@ pub async fn run(
     authors: &[String],
     relays: &[String],
     json_output: bool,
+    match_mode: MatchMode,
 ) -> Result<()> {
     if !json_output && webhook_url.is_none() {
         bail!("--webhook is required unless --json is specified");
@@ -252,6 +317,7 @@ pub async fn run(
             mention_only,
             keywords,
             &author_pubkeys,
+            match_mode,
         );
         return watch_json(&nostr_client, &watch_filter).await;
     }
@@ -290,6 +356,7 @@ pub async fn run(
             mention_only && watching_mentions,
             keywords,
             &author_pubkeys,
+            match_mode,
         ))
     } else {
         None
@@ -581,6 +648,12 @@ fn filter_description(filter: &WatchFilter) -> Result<Vec<String>> {
     if !filter.keywords.is_empty() {
         lines.push(format!("Keywords: {:?}", filter.keywords));
     }
+    if filter.is_narrowed() {
+        lines.push(match filter.match_mode {
+            MatchMode::Any => "Match: any (an event matching one condition is kept)".to_string(),
+            MatchMode::All => "Match: all (every condition above must hold)".to_string(),
+        });
+    }
     if !filter.is_narrowed() {
         lines.push(
             "WARNING: no mention/keyword/author filter - every event of these kinds is matched"
@@ -764,7 +837,7 @@ mod tests {
 
     /// Default `watch` invocation: no --kind, no --keyword, no --author.
     fn mention_filter(target: PublicKey) -> WatchFilter {
-        WatchFilter::new(target, &[], true, &[], &[])
+        WatchFilter::new(target, &[], true, &[], &[], MatchMode::Any)
     }
 
     // --- kinds ---------------------------------------------------------------
@@ -778,7 +851,7 @@ mod tests {
         );
         // --kind wins when given.
         assert_eq!(
-            WatchFilter::new(me, &[1, 9735], true, &[], &[]).kinds,
+            WatchFilter::new(me, &[1, 9735], true, &[], &[], MatchMode::Any).kinds,
             vec![Kind::TextNote, Kind::from(9735u16)]
         );
     }
@@ -827,7 +900,7 @@ mod tests {
     #[test]
     fn keyword_matches_without_a_p_tag() {
         let me = Keys::generate().public_key();
-        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[]);
+        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[], MatchMode::Any);
         assert_eq!(
             filter.match_event(&note("I love Nostr", vec![])),
             Some(MatchReason::Keyword("nostr".to_string()))
@@ -840,7 +913,7 @@ mod tests {
         // The regression that started this: keyword watching must not cost us p-tag
         // replies, and vice versa.
         let me = Keys::generate().public_key();
-        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[]);
+        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[], MatchMode::Any);
         assert_eq!(
             filter.match_event(&note("no keyword here", vec![Tag::public_key(me)])),
             Some(MatchReason::Mention)
@@ -872,7 +945,7 @@ mod tests {
         // `--author=X --kind=1`, what OpenCrab sends: every post by X must come through.
         let me = Keys::generate().public_key();
         let watched = Keys::generate();
-        let filter = WatchFilter::new(me, &[1], true, &[], &[watched.public_key()]);
+        let filter = WatchFilter::new(me, &[1], true, &[], &[watched.public_key()], MatchMode::Any);
         assert_eq!(
             filter.match_event(&note_from(&watched, "just a regular post", vec![])),
             Some(MatchReason::Author)
@@ -892,6 +965,7 @@ mod tests {
             true,
             &["nostr".to_string()],
             &[watched.public_key()],
+            MatchMode::Any,
         );
         assert_eq!(
             filter.match_event(&note_from(&watched, "anything", vec![])),
@@ -914,7 +988,7 @@ mod tests {
     fn no_condition_at_all_matches_everything() {
         // `--kind 1 --no-mention-only` with nothing else: explicitly asking for all of it.
         let me = Keys::generate().public_key();
-        let filter = WatchFilter::new(me, &[1], false, &[], &[]);
+        let filter = WatchFilter::new(me, &[1], false, &[], &[], MatchMode::Any);
         assert!(!filter.is_narrowed());
         assert_eq!(
             filter.match_event(&note("anything at all", vec![])),
@@ -927,7 +1001,7 @@ mod tests {
         // `--kind 1 --no-mention-only --keyword foo` stays keyword-filtered instead of
         // degrading into a kind:1 firehose.
         let me = Keys::generate().public_key();
-        let filter = WatchFilter::new(me, &[1], false, &["foo".to_string()], &[]);
+        let filter = WatchFilter::new(me, &[1], false, &["foo".to_string()], &[], MatchMode::Any);
         assert!(filter.is_narrowed());
         assert_eq!(
             filter.match_event(&note("has foo inside", vec![])),
@@ -954,7 +1028,8 @@ mod tests {
         assert!(has_p_tag(&subs[0]));
 
         // p tag + keyword: the keyword one is an un-narrowed kind:1, matched locally.
-        let subs = WatchFilter::new(me, &[], true, &["foo".to_string()], &[]).subscriptions(now);
+        let subs = WatchFilter::new(me, &[], true, &["foo".to_string()], &[], MatchMode::Any)
+            .subscriptions(now);
         assert_eq!(subs.len(), 2);
         assert!(has_p_tag(&subs[0]));
         assert!(!has_p_tag(&subs[1]));
@@ -962,7 +1037,8 @@ mod tests {
 
         // p tag + author: the author subscription must not be p-tag narrowed, or
         // "follow everything X posts" collapses to "X's replies to me".
-        let subs = WatchFilter::new(me, &[1], true, &[], &[author]).subscriptions(now);
+        let subs =
+            WatchFilter::new(me, &[1], true, &[], &[author], MatchMode::Any).subscriptions(now);
         assert_eq!(subs.len(), 2);
         assert!(has_p_tag(&subs[0]));
         assert!(!has_p_tag(&subs[1]));
@@ -982,7 +1058,8 @@ mod tests {
     #[test]
     fn unnarrowed_filter_subscribes_to_the_bare_kinds() {
         let me = Keys::generate().public_key();
-        let subs = WatchFilter::new(me, &[1], false, &[], &[]).subscriptions(Timestamp::now());
+        let subs = WatchFilter::new(me, &[1], false, &[], &[], MatchMode::Any)
+            .subscriptions(Timestamp::now());
         assert_eq!(subs.len(), 1);
         assert!(!has_p_tag(&subs[0]));
         assert_eq!(subs[0].authors, None);
@@ -1006,13 +1083,21 @@ mod tests {
         // thing being watched).
         let mention_only = true;
         let watching_mentions = true;
-        let json_filter = WatchFilter::new(me, &args_kinds, mention_only, &keywords, &authors);
+        let json_filter = WatchFilter::new(
+            me,
+            &args_kinds,
+            mention_only,
+            &keywords,
+            &authors,
+            MatchMode::Any,
+        );
         let webhook_filter = WatchFilter::new(
             me,
             &args_kinds,
             mention_only && watching_mentions,
             &keywords,
             &authors,
+            MatchMode::Any,
         );
 
         let now = Timestamp::now();
@@ -1033,12 +1118,144 @@ mod tests {
         }
     }
 
+    // --- --match any / all ------------------------------------------------------
+
+    #[test]
+    fn default_match_mode_is_any() {
+        // Nothing on the command line means OR, so nothing is lost by accident.
+        assert_eq!(MatchMode::default(), MatchMode::Any);
+        let me = Keys::generate().public_key();
+        assert_eq!(mention_filter(me).match_mode, MatchMode::Any);
+    }
+
+    #[test]
+    fn match_all_requires_author_and_keyword_together() {
+        let me = Keys::generate().public_key();
+        let watched = Keys::generate();
+        let filter = WatchFilter::new(
+            me,
+            &[1],
+            false,
+            &["nostr".to_string()],
+            &[watched.public_key()],
+            MatchMode::All,
+        );
+
+        // Both conditions hold.
+        assert_eq!(
+            filter.match_event(&note_from(&watched, "about nostr", vec![])),
+            Some(MatchReason::Keyword("nostr".to_string()))
+        );
+        // Right author, wrong content.
+        assert!(filter
+            .match_event(&note_from(&watched, "about lunch", vec![]))
+            .is_none());
+        // Right content, wrong author.
+        assert!(filter.match_event(&note("about nostr", vec![])).is_none());
+    }
+
+    #[test]
+    fn match_all_requires_mention_and_keyword_together() {
+        let me = Keys::generate().public_key();
+        let filter = WatchFilter::new(me, &[], true, &["nostr".to_string()], &[], MatchMode::All);
+
+        assert_eq!(
+            filter.match_event(&note("about nostr", vec![Tag::public_key(me)])),
+            Some(MatchReason::Mention)
+        );
+        // Addressed to us but off-topic.
+        assert!(filter
+            .match_event(&note("about lunch", vec![Tag::public_key(me)]))
+            .is_none());
+        // On-topic but not addressed to us.
+        assert!(filter.match_event(&note("about nostr", vec![])).is_none());
+    }
+
+    #[test]
+    fn match_all_makes_author_an_exclusive_scope() {
+        // The counterpart to `author_watching_keeps_mentions_and_keywords_too`: with
+        // --match all, mentions from anyone else no longer come through.
+        let me = Keys::generate().public_key();
+        let watched = Keys::generate();
+        let filter = WatchFilter::new(me, &[1], true, &[], &[watched.public_key()], MatchMode::All);
+
+        assert_eq!(
+            filter.match_event(&note_from(&watched, "hi", vec![Tag::public_key(me)])),
+            Some(MatchReason::Mention)
+        );
+        assert!(filter
+            .match_event(&note("hi", vec![Tag::public_key(me)]))
+            .is_none());
+        assert!(filter
+            .match_event(&note_from(&watched, "not addressed to me", vec![]))
+            .is_none());
+    }
+
+    #[test]
+    fn a_single_condition_behaves_the_same_in_both_modes() {
+        let me = Keys::generate().public_key();
+        let any = WatchFilter::new(me, &[], true, &[], &[], MatchMode::Any);
+        let all = WatchFilter::new(me, &[], true, &[], &[], MatchMode::All);
+        for event in [note("hi", vec![Tag::public_key(me)]), note("hi", vec![])] {
+            assert_eq!(any.match_event(&event), all.match_event(&event));
+        }
+    }
+
+    #[test]
+    fn no_condition_passes_everything_in_both_modes() {
+        let me = Keys::generate().public_key();
+        for mode in [MatchMode::Any, MatchMode::All] {
+            let filter = WatchFilter::new(me, &[1], false, &[], &[], mode);
+            assert_eq!(
+                filter.match_event(&note("anything at all", vec![])),
+                Some(MatchReason::Unfiltered)
+            );
+            let subs = filter.subscriptions(Timestamp::now());
+            assert_eq!(subs.len(), 1);
+            assert!(!has_p_tag(&subs[0]));
+            assert_eq!(subs[0].authors, None);
+        }
+    }
+
+    #[test]
+    fn match_all_collapses_the_subscriptions_into_one() {
+        let me = Keys::generate().public_key();
+        let author = Keys::generate().public_key();
+        let now = Timestamp::now();
+        let filter = WatchFilter::new(
+            me,
+            &[1],
+            true,
+            &["foo".to_string()],
+            &[author],
+            MatchMode::All,
+        );
+
+        let subs = filter.subscriptions(now);
+        assert_eq!(subs.len(), 1, "AND composes into a single relay filter");
+        // Everything the relay can evaluate is on that one filter...
+        assert!(has_p_tag(&subs[0]));
+        assert_eq!(subs[0].authors, Some([author].into_iter().collect()));
+        assert_eq!(subs[0].kinds, Some([Kind::TextNote].into_iter().collect()));
+
+        // ...whereas the same conditions with --match any need one subscription each.
+        let any = WatchFilter::new(
+            me,
+            &[1],
+            true,
+            &["foo".to_string()],
+            &[author],
+            MatchMode::Any,
+        );
+        assert_eq!(any.subscriptions(now).len(), 3);
+    }
+
     /// `--channel` alone watches no mentions, so the p-tag condition is dropped there.
     #[test]
     fn channel_only_run_drops_the_mention_condition() {
         let me = Keys::generate().public_key();
         // `mention_only && watching_mentions` with watching_mentions = false.
-        let filter = WatchFilter::new(me, &[], false, &["foo".to_string()], &[]);
+        let filter = WatchFilter::new(me, &[], false, &["foo".to_string()], &[], MatchMode::Any);
         assert!(!filter.mention_only);
         assert!(filter
             .match_event(&note("hi", vec![Tag::public_key(me)]))
