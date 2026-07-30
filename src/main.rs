@@ -474,7 +474,7 @@ async fn main() -> anyhow::Result<()> {
                 channel.as_deref(),
                 &keywords,
                 &kinds,
-                mention_only && !no_mention_only,
+                commands::watch::effective_mention_only(mention_only, no_mention_only),
                 &authors,
                 &relays,
                 json,
@@ -531,11 +531,13 @@ mod tests {
             ..
         } = cli.command
         {
-            // `mention_only` keeps its default; the effective value is the conjunction,
-            // which is what `run` is given.
+            // `mention_only` keeps its default; what `run` is given is the shared
+            // derivation, which must come out false.
             assert!(no_mention_only);
-            let effective = mention_only && !no_mention_only;
-            assert!(!effective, "--no-mention-only must turn the condition off");
+            assert!(
+                !commands::watch::effective_mention_only(mention_only, no_mention_only),
+                "--no-mention-only must turn the p-tag condition off"
+            );
         } else {
             panic!("wrong command");
         }
@@ -551,11 +553,30 @@ mod tests {
             ..
         } = cli.command
         {
-            let effective = mention_only && !no_mention_only;
-            assert!(effective, "the p-tag condition is on by default");
+            assert!(
+                commands::watch::effective_mention_only(mention_only, no_mention_only),
+                "the p-tag condition is on by default"
+            );
         } else {
             panic!("wrong command");
         }
+    }
+
+    #[test]
+    fn test_mention_only_and_no_mention_only_conflict() {
+        use clap::Parser;
+        let parsed = Cli::try_parse_from([
+            "nostaro",
+            "watch",
+            "--json",
+            "--mention-only",
+            "--no-mention-only",
+        ]);
+        let err = match parsed {
+            Ok(_) => panic!("contradictory flags must be rejected"),
+            Err(e) => e,
+        };
+        assert_eq!(err.kind(), clap::error::ErrorKind::ArgumentConflict);
     }
 
     #[test]
