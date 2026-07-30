@@ -185,13 +185,54 @@ nostaro watch --webhook https://discord.com/api/webhooks/... --npub npub1...
 
 # NIP-28 チャンネルをウォッチ
 nostaro watch --webhook https://discord.com/api/webhooks/... --channel <hex_channel_id>
+
+# 特定の人の投稿を全部追う（自分宛のメンションも届く）
+nostaro watch --webhook ... --author npub1... --author npub1...
+
+# その人の投稿のうち "nostr" を含むものだけ
+nostaro watch --webhook ... --author npub1... --keyword nostr --match all
+
+# Discord ではなく stdout に JSON Lines（1行1イベント）
+nostaro watch --json --keyword nostr
 ```
+
+**フィルタ.** `watch` の条件は3つあり、`--match` で結合方法を選びます:
+
+| 条件 | フラグ | 備考 |
+|---|---|---|
+| 監視対象宛のメンション（`p` タグ） | 既定で on、`--no-mention-only` で off | 対象は `--npub`、未指定なら自分 |
+| 本文のキーワード | `--keyword`（複数可） | ローカル照合（リレーは content で絞れない） |
+| 特定の author の投稿 | `--author`（複数可） | |
+
+- `--match any`（**既定**）: **どれか1つ**満たせば拾う。
+- `--match all`: **すべて**満たすものだけ拾う。
+- 条件を1つも指定しない場合（`--no-mention-only` のみ等）は、対象 kind の全イベントを拾います。
+  kind は `--kind` で指定し、既定は kind:1 + kind:7 です。
 
 **機能:**
 - メンション、リプライ、リアクション (kind:7)、リポスト (kind:6) を検出
 - リアクション通知には元の投稿が引用として含まれる
 - kind:0 プロフィールメタデータ（アイコン、表示名）を Webhook アバターに使用
 - 継続的に実行 — バックグラウンド監視に最適
+
+> **旧バージョンからの移行 — 挙動が6点変わりました:**
+>
+> 1. **`--author` が排他スコープから OR 条件に変わりました。** 以前は指定 author 以外を
+>    すべて捨てていましたが、既定の `--match any` では自分宛のメンションも併せて届きます。
+>    **通知量が大幅に増える可能性があります。** 旧挙動が必要なら `--match all` を付けてください。
+> 2. **`--no-mention-only` が実際に効くようになりました**（従来は無視されていました）。
+>    `--kind` も他の条件も無い状態で指定すると、リレー上の kind:1 / kind:7 が**全部**対象に
+>    なります。`--webhook` では Discord に大量投稿が流れます。
+> 3. **`--json` の既定が mention-only になりました。** 以前は kind:1 を全件購読していたので、
+>    その挙動に依存していた場合は `--no-mention-only` を明示してください。
+> 4. **`--json` の既定 kind が kind:1 + kind:7 になりました。** 以前は kind:1 のみだったため、
+>    `--kind` を渡していない JSON 消費者にはリアクションイベントが流入します。従来どおりに
+>    するには `--kind 1` を指定してください。
+> 5. **`--json` でも自分のイベントが除外されるようになりました。** webhook では従来から
+>    除外していましたが、JSON では返っていました。自分の投稿も取りたい場合は
+>    `--author <自分の npub>` を指定してください。
+> 6. **`--mention-only` と `--no-mention-only` の同時指定はパースエラーになりました。**
+>    以前は後勝ちで受理されていました。どちらか一方だけを指定してください。
 
 ### イベント (カスタム Kind)
 

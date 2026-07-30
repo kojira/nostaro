@@ -188,13 +188,55 @@ nostaro watch --webhook https://discord.com/api/webhooks/... --npub npub1...
 
 # Watch a NIP-28 channel
 nostaro watch --webhook https://discord.com/api/webhooks/... --channel <hex_channel_id>
+
+# Follow everything two people post, plus your own mentions
+nostaro watch --webhook ... --author npub1... --author npub1...
+
+# Only posts by that author that also contain "nostr"
+nostaro watch --webhook ... --author npub1... --keyword nostr --match all
+
+# JSON Lines on stdout instead of Discord (one event per line)
+nostaro watch --json --keyword nostr
 ```
+
+**Filtering.** `watch` has three conditions, and `--match` decides how they combine:
+
+| Condition | Flag | Notes |
+|---|---|---|
+| Mentions of the watched pubkey (`p` tag) | on by default, `--no-mention-only` turns it off | target is `--npub`, or you |
+| Keyword in the content | `--keyword` (repeatable) | matched locally; relays cannot filter by content |
+| Written by a given author | `--author` (repeatable) | |
+
+- `--match any` (**default**): keep an event satisfying **at least one** condition.
+- `--match all`: keep only events satisfying **every** configured condition.
+- With no condition configured (`--no-mention-only` and nothing else) every event of the
+  watched kinds is kept. `--kind` selects the kinds; the default is kind:1 + kind:7.
 
 **Features:**
 - Detects mentions, replies, reactions (kind:7), and reposts (kind:6)
 - Reaction notifications include the original post as a quote
 - Uses kind:0 profile metadata (icon, display name) for webhook avatar
 - Runs continuously — ideal for background monitoring
+
+> **Upgrading from an earlier version — six behaviour changes:**
+>
+> 1. **`--author` is now an OR condition, not an exclusive scope.** It used to drop
+>    everything not written by those authors; now, with the default `--match any`, your
+>    own mentions come through as well. **This can increase notification volume a lot.**
+>    Add `--match all` for the old behaviour.
+> 2. **`--no-mention-only` actually works now** (it was silently ignored). With no
+>    `--kind` and no other condition it means *every* kind:1 and kind:7 event on the
+>    relays, which for `--webhook` is a firehose into Discord.
+> 3. **`--json` now defaults to mention-only.** It used to subscribe to every kind:1
+>    event; if you relied on that, pass `--no-mention-only` explicitly.
+> 4. **`--json` now defaults to kind:1 *and* kind:7.** It used to watch kind:1 only, so
+>    JSON consumers that pass no `--kind` will start seeing reaction events. Pass
+>    `--kind 1` to keep the old stream.
+> 5. **`--json` no longer echoes your own events back at you.** The webhook mode always
+>    dropped them; JSON mode did not. Pass `--author <your own npub>` if you want your own
+>    posts in the stream.
+> 6. **`--mention-only` and `--no-mention-only` together are now a parse error.** They
+>    used to be accepted, with the last one silently winning. Pass only one.
 
 ### Event (Custom Kind)
 

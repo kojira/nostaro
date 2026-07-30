@@ -1,7 +1,23 @@
 # WATCH_REDESIGN.md — nostaro watch コマンド 柔軟フィルタ設計書
 
-> 作成日: 2026-03-23  
-> ステータス: 設計フェーズ（コード変更なし）
+> 作成日: 2026-03-23
+> ステータス: **旧設計文書（アーカイブ）。実装は本文書から乖離しています。**
+
+> **この文書は歴史的経緯の記録です。** 記載のシグネチャ・購読構成・イベント処理フローは
+> 当時の設計であり、現在の実装とは異なります。現行の仕様は以下を参照してください:
+>
+> - 利用者向け: `README.md` / `README-ja.md` の Watch セクション（条件3つと `--match any|all`）
+> - 実装: `src/commands/watch.rs` の `WatchFilter` / `build_watch_filter`
+>
+> 現行実装の要点（本文書との差分）:
+>
+> - 購読条件は **p タグ / keyword / author の3つ**で、`--match any`（既定、OR）と
+>   `--match all`（AND）で結合方法を選ぶ。購読フィルタも結合方法に応じて
+>   「条件ごとに1本」か「1本に合成」かが変わる。
+> - `--json` と `--webhook` は**同一の `WatchFilter` を通る**（違いは出力先だけ）。
+>   フィルタ構築は `build_watch_filter` の1箇所。
+> - keyword は relay 側で絞れないためローカル照合。対象 kind は `--kind` 指定時はその kind、
+>   未指定時は kind:1 のみ（既定 kind は kind:1 + kind:7）。
 
 ---
 
