@@ -300,18 +300,37 @@ fn event_file_rejects_wrong_tag_shape() {
 }
 
 #[test]
-fn event_file_rejects_a_tag_with_no_value() {
-    // `Tag::parse` accepts ["p"], which would publish a kind:3 entry that every
-    // relay and client ignores — and a kind:3 replaces the whole follow list.
-    let hex = "0".repeat(64);
-    let json = format!(r#"{{"kind": 3, "tags": [["p", "{}"], ["p"]]}}"#, hex);
-    let spec = parse_event_spec(&json).unwrap();
-    let err = spec.parsed_tags().unwrap_err().to_string();
-    assert!(
-        err.contains("tags[1]") && err.contains("no value"),
-        "got: {}",
-        err
+fn event_file_leaves_tags_it_does_not_know_alone() {
+    // Tag shape is the NIPs' business. A name-only tag (NIP-70's protected
+    // marker), an unknown name and an unknown multi-element tag must all pass
+    // through untouched — nostaro validates values, not shapes.
+    let spec = parse_event_spec(
+        r#"{"kind": 1, "content": "x", "tags": [["-"], ["foo"], ["bar", "baz", "qux"]]}"#,
+    )
+    .unwrap();
+    let tags = spec.parsed_tags().unwrap();
+    assert_eq!(tags[0].as_slice(), ["-".to_string()]);
+    assert_eq!(tags[1].as_slice(), ["foo".to_string()]);
+    assert_eq!(
+        tags[2].as_slice(),
+        ["bar".to_string(), "baz".to_string(), "qux".to_string()]
     );
+
+    // ...and they survive all the way into a signed event.
+    let keys = nostaro::keys::generate_keys();
+    let event = nostaro::commands::event::build_event(spec.kind, spec.content, tags)
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert_eq!(event.tags.len(), 3);
+    assert!(event.verify().is_ok());
+}
+
+#[test]
+fn event_file_accepts_a_p_tag_with_no_value() {
+    // "missing" is not "malformed": there is no value to check, so nostaro does
+    // not invent a rule about it.
+    let spec = parse_event_spec(r#"{"kind": 1, "tags": [["p"]]}"#).unwrap();
+    assert_eq!(spec.parsed_tags().unwrap()[0].as_slice(), ["p".to_string()]);
 }
 
 #[test]
@@ -357,6 +376,18 @@ fn event_file_keeps_non_hex_tag_values_untouched() {
     let spec =
         parse_event_spec(r#"{"kind": 1, "tags": [["t", "nostr"], ["alt", "a note"]]}"#).unwrap();
     assert_eq!(spec.parsed_tags().unwrap().len(), 2);
+}
+
+#[test]
+fn event_file_accepts_proper_hex_in_p_and_e_tags() {
+    let hex = "0".repeat(64);
+    let json = format!(
+        r#"{{"kind": 1, "tags": [["p", "{}"], ["e", "{}", "wss://relay.example", "root"]]}}"#,
+        hex, hex
+    );
+    let tags = parse_event_spec(&json).unwrap().parsed_tags().unwrap();
+    assert_eq!(tags.len(), 2);
+    assert_eq!(tags[0].as_slice(), ["p".to_string(), hex.clone()]);
 }
 
 #[test]

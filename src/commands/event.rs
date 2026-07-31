@@ -29,11 +29,15 @@ fn is_hex_32_bytes(value: &str) -> bool {
 
 /// Validate one tag beyond what `Tag::parse` checks.
 ///
-/// nostr 0.41's `Tag::parse` only rejects a completely empty tag: both `["p"]`
-/// (a name with no value) and `["p", "npub1..."]` (bech32 where hex is required)
-/// go through and produce an event that relays and clients quietly ignore. In a
-/// kind:3 that is destructive, because the event replaces the entire follow
-/// list — a single bad entry would drop that person silently.
+/// The one thing nostr 0.41's `Tag::parse` lets through that really hurts is a
+/// `p` / `e` tag whose value is not hex — `["p", "npub1..."]` produces a tag
+/// that relays and clients quietly ignore, and in a kind:3 that is destructive,
+/// because the event replaces the entire follow list and the pasted person just
+/// vanishes from it.
+///
+/// Nothing else is second-guessed here: the shape of a tag is the NIPs' business
+/// (a name-only tag such as NIP-70's `["-"]` is perfectly valid), and nostaro
+/// must not refuse tags it happens not to know.
 fn validate_tag(index: usize, values: &[String]) -> Result<()> {
     let Some(name) = values.first() else {
         bail!(
@@ -42,16 +46,11 @@ fn validate_tag(index: usize, values: &[String]) -> Result<()> {
         );
     };
 
-    if values.len() < 2 {
-        bail!(
-            "tags[{}] is [\"{}\"]: a name with no value. Write it as [\"{}\", \"<value>\"]",
-            index,
-            name,
-            name
-        );
-    }
+    // No value means nothing to validate: "missing" is not "malformed".
+    let Some(value) = values.get(1) else {
+        return Ok(());
+    };
 
-    let value = &values[1];
     if HEX_VALUE_TAGS.contains(&name.as_str()) && !is_hex_32_bytes(value) {
         let hint = BECH32_PREFIXES
             .iter()

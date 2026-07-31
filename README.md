@@ -323,11 +323,14 @@ computes for you:
   event than the one it describes.
 - Unknown fields are rejected too, so a `"tag"`/`"tags"` typo fails loudly
   instead of publishing an event that silently lost all of its tags.
-- Tags are validated before anything is published: a tag with a name but no
-  value (`["p"]`) is rejected, and `p` / `e` tag values must be plain
-  **64-character hex** — pasting an `npub1…` gets you an error telling you to
-  convert it, not a follow list that silently dropped that person. (A
-  consequence: single-element tags such as NIP-70's `["-"]` are not supported.)
+- `p` and `e` tag **values** are checked before anything is published: they must
+  be plain **64-character hex**. Pasting an `npub1…` gets you an error telling
+  you to convert it, instead of a follow list that silently dropped that person
+  (a kind:3 replaces the whole list, and a malformed entry is ignored by relays
+  and clients).
+- Nothing else about a tag's shape is second-guessed. Name-only tags such as
+  NIP-70's `["-"]`, and any tag nostaro does not know, pass through untouched —
+  only a completely empty tag (`[]`) is rejected.
 - Files larger than 8 MiB are rejected (~100k tags is well under that).
 - `--file` **cannot be combined** with `--kind` / `--tag` / `--content`: the
   file is the complete description of the event. Use one style or the other.
