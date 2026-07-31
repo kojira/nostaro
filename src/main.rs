@@ -1,5 +1,6 @@
 use clap::{Parser, Subcommand};
 use nostaro::commands;
+use nostaro::output::{self, OutFormat};
 use std::path::PathBuf;
 
 #[derive(Parser)]
@@ -8,6 +9,16 @@ struct Cli {
     /// Path to the config file to use (defaults to ~/.nostaro/config.toml)
     #[arg(long, global = true, env = "NOSTARO_CONFIG")]
     config: Option<PathBuf>,
+
+    /// Write the bulk output to this file (overwriting it) instead of stdout;
+    /// stdout then keeps only the summary. Supported by: following, followers,
+    /// timeline, search
+    #[arg(long, global = true)]
+    out: Option<PathBuf>,
+
+    /// Format of the --out file: text (default, same listing as stdout) or json
+    #[arg(long, global = true, value_enum, requires = "out")]
+    out_format: Option<OutFormat>,
 
     #[command(subcommand)]
     command: Commands,
@@ -191,14 +202,20 @@ enum Commands {
     /// Post a custom kind Nostr event
     Event {
         /// Event kind number
-        #[arg(short, long)]
-        kind: u16,
+        #[arg(short, long, required_unless_present = "file")]
+        kind: Option<u16>,
         /// Tags in "key,value" format (repeatable)
         #[arg(short, long)]
         tag: Vec<String>,
-        /// Event content
-        #[arg(short, long, default_value = "")]
-        content: String,
+        /// Event content (defaults to empty)
+        #[arg(short, long)]
+        content: Option<String>,
+        /// Read the whole unsigned event from a JSON file:
+        /// {"kind":3,"content":"","tags":[["p","<hex>"],...]}.
+        /// nostaro adds pubkey/created_at/id/sig. Cannot be combined with
+        /// --kind/--tag/--content
+        #[arg(short = 'f', long, conflicts_with_all = ["kind", "tag", "content"])]
+        file: Option<PathBuf>,
     },
 
     /// Decode a Nostr bech32 entity (npub, nsec, note, nprofile, nevent, naddr)
@@ -357,15 +374,62 @@ enum RelayAction {
     List,
 }
 
+/// The commands that can produce an `--out-format json` document.
+const JSON_OUT_COMMANDS: &str = "following, followers, timeline, search";
+
+impl Commands {
+    /// Whether this command writes a JSON body.
+    ///
+    /// Checked *before* the command runs. Rejecting the combination afterwards
+    /// would exit non-zero on a command that has already published an event,
+    /// and an automation retrying on a non-zero exit would then post twice.
+    fn writes_json_body(&self) -> bool {
+        matches!(
+            self,
+            Commands::Following { .. }
+                | Commands::Followers { .. }
+                | Commands::Timeline { .. }
+                | Commands::Search { .. }
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if cli.out_format == Some(OutFormat::Json) && !cli.command.writes_json_body() {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::InvalidValue,
+                format!(
+                    "--out-format json is only supported by: {}. \
+                     This command has no JSON output; re-run without --out-format json.",
+                    JSON_OUT_COMMANDS
+                ),
+            )
+            .exit();
+    }
 
     if let Some(path) = cli.config {
         nostaro::config::NostaroConfig::set_config_path_override(path);
     }
 
-    match cli.command {
+    output::configure(cli.out, cli.out_format.unwrap_or_default());
+
+    match dispatch(cli.command).await {
+        Ok(()) => output::finish(),
+        Err(err) => {
+            // The sink lives in a `static`, so nothing flushes it for us.
+            output::flush();
+            Err(err)
+        }
+    }
+}
+
+async fn dispatch(command: Commands) -> anyhow::Result<()> {
+    match command {
         Commands::Init => commands::init::run().await?,
         Commands::Pubkey => commands::pubkey::run().await?,
         Commands::Post { message, quote } => {
@@ -453,7 +517,12 @@ async fn main() -> anyhow::Result<()> {
             RelayAction::Remove { url } => commands::relay::remove(&url).await?,
             RelayAction::List => commands::relay::list().await?,
         },
-        Commands::Event { kind, tag, content } => commands::event::run(kind, tag, &content).await?,
+        Commands::Event {
+            kind,
+            tag,
+            content,
+            file,
+        } => commands::event::run(kind, tag, content, file.as_deref()).await?,
         Commands::Watch {
             webhook,
             npub,
@@ -501,6 +570,15 @@ async fn main() -> anyhow::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `Cli` is not `Debug` (clap does not require it), so `expect_err` is out.
+    fn parse_error(args: &[&str]) -> clap::Error {
+        use clap::Parser;
+        match Cli::try_parse_from(args.iter().copied()) {
+            Ok(_) => panic!("expected a parse error for {:?}", args),
+            Err(err) => err,
+        }
+    }
 
     #[test]
     fn test_kind_delimiter_parsing() {
@@ -599,6 +677,136 @@ mod tests {
         } else {
             panic!("wrong command");
         }
+    }
+
+    #[test]
+    fn test_event_file_replaces_the_inline_flags() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "event", "--file", "/tmp/event.json"]).unwrap();
+        match cli.command {
+            Commands::Event {
+                kind,
+                tag,
+                content,
+                file,
+            } => {
+                // --kind is not required once --file is given.
+                assert_eq!(kind, None);
+                assert!(tag.is_empty());
+                assert_eq!(content, None);
+                assert_eq!(file, Some(PathBuf::from("/tmp/event.json")));
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn test_event_inline_flags_still_parse() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "nostaro",
+            "event",
+            "--kind",
+            "1",
+            "--tag",
+            "t,nostr",
+            "--content",
+            "hi",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Event {
+                kind,
+                tag,
+                content,
+                file,
+            } => {
+                assert_eq!(kind, Some(1));
+                assert_eq!(tag, vec!["t,nostr".to_string()]);
+                assert_eq!(content.as_deref(), Some("hi"));
+                assert_eq!(file, None);
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    #[test]
+    fn test_event_file_conflicts_with_inline_flags() {
+        for extra in [["--kind", "1"], ["--tag", "t,nostr"], ["--content", "hi"]] {
+            let mut args = vec!["nostaro", "event", "--file", "/tmp/event.json"];
+            args.extend_from_slice(&extra);
+            assert_eq!(
+                parse_error(&args).kind(),
+                clap::error::ErrorKind::ArgumentConflict,
+                "--file must not be combined with {:?}",
+                extra
+            );
+        }
+    }
+
+    #[test]
+    fn test_event_without_kind_or_file_is_rejected() {
+        assert_eq!(
+            parse_error(&["nostaro", "event"]).kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
+    }
+
+    #[test]
+    fn test_out_is_global_and_defaults_to_stdout() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "following"]).unwrap();
+        assert_eq!(cli.out, None);
+        assert_eq!(cli.out_format, None);
+
+        let cli = Cli::try_parse_from([
+            "nostaro",
+            "following",
+            "--out",
+            "/tmp/following.json",
+            "--out-format",
+            "json",
+        ])
+        .unwrap();
+        assert_eq!(cli.out, Some(PathBuf::from("/tmp/following.json")));
+        assert_eq!(cli.out_format, Some(OutFormat::Json));
+    }
+
+    #[test]
+    fn test_json_out_is_gated_to_the_commands_that_produce_it() {
+        use clap::Parser;
+        let supported: [&[&str]; 4] = [
+            &["nostaro", "following"],
+            &["nostaro", "followers"],
+            &["nostaro", "timeline"],
+            &["nostaro", "search", "query"],
+        ];
+        for args in supported {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            assert!(cli.command.writes_json_body(), "{:?}", args);
+        }
+
+        // Publishing commands must be refused *before* they run, otherwise the
+        // event goes out and the process still exits non-zero.
+        let unsupported: [&[&str]; 4] = [
+            &["nostaro", "post", "hi"],
+            &["nostaro", "event", "--file", "/tmp/event.json"],
+            &["nostaro", "follow", "npub1abc"],
+            &["nostaro", "pubkey"],
+        ];
+        for args in unsupported {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            assert!(!cli.command.writes_json_body(), "{:?}", args);
+        }
+    }
+
+    #[test]
+    fn test_out_format_requires_out() {
+        // --out-format alone would silently do nothing, so it is rejected.
+        assert_eq!(
+            parse_error(&["nostaro", "following", "--out-format", "json"]).kind(),
+            clap::error::ErrorKind::MissingRequiredArgument
+        );
     }
 
     #[test]

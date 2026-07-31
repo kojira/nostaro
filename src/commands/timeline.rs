@@ -8,6 +8,35 @@ use crate::cache::CacheDb;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::outln;
+use crate::output;
+
+/// Resolve who reacted: the npub, the cached display name (if any) and whether
+/// it is the local user. Reactions by the local user are never name-resolved,
+/// they are always shown as "you".
+fn reactor_identity(
+    reaction: &Event,
+    own_pubkey: PublicKey,
+    cache: Option<&CacheDb>,
+) -> (String, Option<String>, bool) {
+    let npub = reaction.pubkey.to_bech32().unwrap_or_default();
+    if reaction.pubkey == own_pubkey {
+        return (npub, None, true);
+    }
+    let name = cache
+        .and_then(|cache| cache.get_profile(&reaction.pubkey.to_hex()).ok().flatten())
+        .and_then(|profile| profile.display_name.or(profile.name))
+        .filter(|name| !name.is_empty());
+    (npub, name, false)
+}
+
+fn reaction_emoji(reaction: &Event) -> String {
+    if reaction.content.is_empty() {
+        "+".to_string()
+    } else {
+        reaction.content.clone()
+    }
+}
 
 async fn fetch_reactions(
     nostr_client: &Client,
@@ -164,17 +193,61 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
         }
     }
 
+    // An empty timeline is still a result: --out gets an empty listing rather
+    // than no file at all, so the body is emitted in every case.
     if all_events.is_empty() {
         println!("No notes found.");
+    }
+
+    let own_pubkey = keys.public_key();
+
+    if output::is_json() {
+        let mut notes = Vec::with_capacity(all_events.len());
+        for event in &all_events {
+            let reactions: Vec<serde_json::Value> = reactions_by_event
+                .get(&event.id)
+                .map(|reactions| {
+                    reactions
+                        .iter()
+                        .map(|reaction| {
+                            let (npub, name, is_self) =
+                                reactor_identity(reaction, own_pubkey, cache.as_ref());
+                            serde_json::json!({
+                                "emoji": reaction_emoji(reaction),
+                                "npub": npub,
+                                "name": name,
+                                "is_self": is_self,
+                            })
+                        })
+                        .collect()
+                })
+                .unwrap_or_default();
+
+            notes.push(serde_json::json!({
+                "event": serde_json::to_value(event)?,
+                "following": following_set.contains(&event.pubkey),
+                "is_self": event.pubkey == own_pubkey,
+                "reactions": reactions,
+            }));
+        }
+        output::write_json(&serde_json::json!({
+            "count": notes.len(),
+            "notes": notes,
+        }))?;
+
+        if !all_events.is_empty() {
+            println!("\nShowing {} note(s).", all_events.len());
+        }
         nostr_client.disconnect().await;
         return Ok(());
     }
 
+    output::open_body()?;
     for event in &all_events {
         let npub = event.pubkey.to_bech32()?;
         let short_npub = &npub;
         let is_following = following_set.contains(&event.pubkey);
-        let is_self = event.pubkey == keys.public_key();
+        let is_self = event.pubkey == own_pubkey;
 
         let label = if is_self {
             " [you]"
@@ -190,40 +263,30 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
             .unwrap_or_else(|| "unknown".to_string());
 
         let note_id = event.id.to_bech32()?;
-        println!("[{}]{} {}", short_npub, label, datetime);
-        println!("{}", event.content);
-        println!("  id: {}", note_id);
+        outln!("[{}]{} {}", short_npub, label, datetime)?;
+        outln!("{}", event.content)?;
+        outln!("  id: {}", note_id)?;
 
         if with_reactions {
             if let Some(reactions) = reactions_by_event.get(&event.id) {
-                let own_pubkey = keys.public_key();
                 let mut counts: HashMap<String, (usize, Vec<String>)> = HashMap::new();
 
                 for reaction in reactions {
-                    let emoji = if reaction.content.is_empty() {
-                        "+".to_string()
-                    } else {
-                        reaction.content.clone()
-                    };
-                    let reactor_npub = reaction.pubkey.to_bech32().unwrap_or_default();
-                    let reactor_name = if reaction.pubkey == own_pubkey {
+                    let (reactor_npub, name, is_self) =
+                        reactor_identity(reaction, own_pubkey, cache.as_ref());
+                    let reactor_label = if is_self {
                         format!("you({})", reactor_npub)
                     } else {
-                        let display_name = cache
-                            .as_ref()
-                            .and_then(|cache| {
-                                cache.get_profile(&reaction.pubkey.to_hex()).ok().flatten()
-                            })
-                            .and_then(|profile| profile.display_name.or(profile.name))
-                            .filter(|name| !name.is_empty());
-                        match display_name {
+                        match name {
                             Some(name) => format!("{}({})", name, reactor_npub),
                             None => reactor_npub,
                         }
                     };
-                    let entry = counts.entry(emoji).or_insert_with(|| (0, Vec::new()));
+                    let entry = counts
+                        .entry(reaction_emoji(reaction))
+                        .or_insert_with(|| (0, Vec::new()));
                     entry.0 += 1;
-                    entry.1.push(reactor_name);
+                    entry.1.push(reactor_label);
                 }
 
                 if !counts.is_empty() {
@@ -233,15 +296,17 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
                         parts.push(format!("{} x{} ({})", emoji, count, names.join(", ")));
                     }
 
-                    println!("  Reactions: {}", parts.join(", "));
+                    outln!("  Reactions: {}", parts.join(", "))?;
                 }
             }
         }
 
-        println!("{}", "-".repeat(60));
+        outln!("{}", "-".repeat(60))?;
     }
 
-    println!("\nShowing {} note(s).", all_events.len());
+    if !all_events.is_empty() {
+        println!("\nShowing {} note(s).", all_events.len());
+    }
 
     nostr_client.disconnect().await;
     Ok(())

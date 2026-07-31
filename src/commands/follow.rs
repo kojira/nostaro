@@ -4,7 +4,64 @@ use nostr_sdk::prelude::*;
 use crate::client;
 use crate::config::NostaroConfig;
 use crate::keys;
+use crate::outln;
+use crate::output;
 use crate::utils::resolve_pubkey;
+
+/// One entry of a following/followers listing: the npub, the hex pubkey (what
+/// a kind:3 `p` tag needs) and the display name, `None` when no kind:0 could be
+/// fetched for that user.
+struct Entry {
+    npub: String,
+    hex: String,
+    name: Option<String>,
+}
+
+async fn describe(nostr_client: &Client, pubkeys: &[PublicKey]) -> Result<Vec<Entry>> {
+    let mut entries = Vec::with_capacity(pubkeys.len());
+    for pubkey in pubkeys {
+        let name = match client::fetch_profile(nostr_client, pubkey).await {
+            Ok(Some(metadata)) => Some(metadata.name.unwrap_or_else(|| "Unknown".to_string())),
+            _ => None,
+        };
+        entries.push(Entry {
+            npub: pubkey.to_bech32()?,
+            hex: pubkey.to_hex(),
+            name,
+        });
+    }
+    Ok(entries)
+}
+
+/// Emit the listing: one line per user, or a JSON document when the caller
+/// asked for `--out-format json`.
+fn emit(entries: &[Entry]) -> Result<()> {
+    if output::is_json() {
+        let users: Vec<serde_json::Value> = entries
+            .iter()
+            .map(|entry| {
+                serde_json::json!({
+                    "npub": entry.npub,
+                    "hex": entry.hex,
+                    "name": entry.name,
+                })
+            })
+            .collect();
+        return output::write_json(&serde_json::json!({
+            "count": users.len(),
+            "users": users,
+        }));
+    }
+
+    output::open_body()?;
+    for entry in entries {
+        match &entry.name {
+            Some(name) => outln!("  {} ({})", name, entry.npub)?,
+            None => outln!("  {}", entry.npub)?,
+        }
+    }
+    Ok(())
+}
 
 pub async fn follow(pubkey_str: &str) -> Result<()> {
     let config = NostaroConfig::load()?;
@@ -72,20 +129,15 @@ pub async fn following(npub_str: Option<&str>) -> Result<()> {
         } else {
             println!("You're not following anyone yet.");
         }
+        // An empty result is still a result: --out gets an empty listing.
+        emit(&[])?;
         nostr_client.disconnect().await;
         return Ok(());
     }
 
     println!("Following {} user(s):", contacts.len());
-    for contact in contacts {
-        let npub = contact.to_bech32()?;
-        if let Ok(Some(metadata)) = client::fetch_profile(&nostr_client, &contact).await {
-            let name = metadata.name.unwrap_or_else(|| "Unknown".to_string());
-            println!("  {} ({})", name, npub);
-        } else {
-            println!("  {}", npub);
-        }
-    }
+    let entries = describe(&nostr_client, &contacts).await?;
+    emit(&entries)?;
 
     nostr_client.disconnect().await;
     Ok(())
@@ -109,20 +161,14 @@ pub async fn followers(npub_str: Option<&str>) -> Result<()> {
         } else {
             println!("No followers found.");
         }
+        emit(&[])?;
         nostr_client.disconnect().await;
         return Ok(());
     }
 
     println!("{} follower(s):", follower_list.len());
-    for follower in follower_list {
-        let npub = follower.to_bech32()?;
-        if let Ok(Some(metadata)) = client::fetch_profile(&nostr_client, &follower).await {
-            let name = metadata.name.unwrap_or_else(|| "Unknown".to_string());
-            println!("  {} ({})", name, npub);
-        } else {
-            println!("  {}", npub);
-        }
-    }
+    let entries = describe(&nostr_client, &follower_list).await?;
+    emit(&entries)?;
 
     nostr_client.disconnect().await;
     Ok(())
