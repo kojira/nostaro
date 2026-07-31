@@ -374,9 +374,43 @@ enum RelayAction {
     List,
 }
 
+/// The commands that can produce an `--out-format json` document.
+const JSON_OUT_COMMANDS: &str = "following, followers, timeline, search";
+
+impl Commands {
+    /// Whether this command writes a JSON body.
+    ///
+    /// Checked *before* the command runs. Rejecting the combination afterwards
+    /// would exit non-zero on a command that has already published an event,
+    /// and an automation retrying on a non-zero exit would then post twice.
+    fn writes_json_body(&self) -> bool {
+        matches!(
+            self,
+            Commands::Following { .. }
+                | Commands::Followers { .. }
+                | Commands::Timeline { .. }
+                | Commands::Search { .. }
+        )
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+
+    if cli.out_format == Some(OutFormat::Json) && !cli.command.writes_json_body() {
+        use clap::CommandFactory;
+        Cli::command()
+            .error(
+                clap::error::ErrorKind::InvalidValue,
+                format!(
+                    "--out-format json is only supported by: {}. \
+                     This command has no JSON output; re-run without --out-format json.",
+                    JSON_OUT_COMMANDS
+                ),
+            )
+            .exit();
+    }
 
     if let Some(path) = cli.config {
         nostaro::config::NostaroConfig::set_config_path_override(path);
@@ -736,6 +770,34 @@ mod tests {
         .unwrap();
         assert_eq!(cli.out, Some(PathBuf::from("/tmp/following.json")));
         assert_eq!(cli.out_format, Some(OutFormat::Json));
+    }
+
+    #[test]
+    fn test_json_out_is_gated_to_the_commands_that_produce_it() {
+        use clap::Parser;
+        let supported: [&[&str]; 4] = [
+            &["nostaro", "following"],
+            &["nostaro", "followers"],
+            &["nostaro", "timeline"],
+            &["nostaro", "search", "query"],
+        ];
+        for args in supported {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            assert!(cli.command.writes_json_body(), "{:?}", args);
+        }
+
+        // Publishing commands must be refused *before* they run, otherwise the
+        // event goes out and the process still exits non-zero.
+        let unsupported: [&[&str]; 4] = [
+            &["nostaro", "post", "hi"],
+            &["nostaro", "event", "--file", "/tmp/event.json"],
+            &["nostaro", "follow", "npub1abc"],
+            &["nostaro", "pubkey"],
+        ];
+        for args in unsupported {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            assert!(!cli.command.writes_json_body(), "{:?}", args);
+        }
     }
 
     #[test]

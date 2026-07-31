@@ -84,12 +84,20 @@ Wrote JSON output to following.json
   — the commands that can print a lot. Any other command accepts the flag but
   has no bulk body; it says so (`No file output for this command; X was not
   written.`) instead of leaving a confusing empty file behind.
-- The file is **overwritten** (like a shell `>`), and it is created even when
-  the result is empty, so "no results" is an empty file rather than a missing
-  one.
+- A supported command **overwrites** the file, and creates it even when the
+  result is empty, so "no results" is an empty file rather than a missing one.
+  The truncation happens when the command starts writing, so: an **unsupported**
+  command leaves an existing file untouched (the old contents remain — do not
+  read them as this run's result), and a command that fails part way through
+  leaves what it had written so far. Check the exit status before trusting the
+  file.
+- The body is written after the data has been fetched, not streamed while it
+  arrives: `following` on a large account is silent for a while and then writes
+  everything at once.
 - Without `--out` nothing changes: the body goes to stdout exactly as before.
-- `--out-format json` is rejected on commands that have no JSON body, so it
-  never silently degrades to text.
+- `--out-format json` is rejected **before the command runs** if that command
+  has no JSON body, so it never silently degrades to text and never fails after
+  a side effect.
 
 JSON shapes:
 
@@ -315,6 +323,12 @@ computes for you:
   event than the one it describes.
 - Unknown fields are rejected too, so a `"tag"`/`"tags"` typo fails loudly
   instead of publishing an event that silently lost all of its tags.
+- Tags are validated before anything is published: a tag with a name but no
+  value (`["p"]`) is rejected, and `p` / `e` tag values must be plain
+  **64-character hex** — pasting an `npub1…` gets you an error telling you to
+  convert it, not a follow list that silently dropped that person. (A
+  consequence: single-element tags such as NIP-70's `["-"]` are not supported.)
+- Files larger than 8 MiB are rejected (~100k tags is well under that).
 - `--file` **cannot be combined** with `--kind` / `--tag` / `--content`: the
   file is the complete description of the event. Use one style or the other.
 - This is the only way to publish an event with **thousands of tags** (a
@@ -334,7 +348,16 @@ nostaro event --file follows.json
 ```
 
 A kind:3 always replaces the whole list, so this is one event no matter how many
-people it contains.
+people it contains — and because it replaces the list, nostaro refuses the whole
+file if any `p` value is not hex rather than publishing a list with a hole in it.
+
+### Publish results
+
+Every publishing command now checks which relays accepted the event. A relay
+that refuses it prints a warning on stderr, and if **no** relay accepted it the
+command fails with a non-zero exit status instead of printing success. This
+matters for large kind:3 events, which can exceed a relay's event-size or
+tag-count limit.
 
 ### Vanity Key Generation
 

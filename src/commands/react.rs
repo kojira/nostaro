@@ -26,7 +26,7 @@ pub async fn run(event_id_str: &str, reaction: &str) -> Result<()> {
     ];
 
     let builder = EventBuilder::new(Kind::Reaction, reaction).tags(tags);
-    nostr_client.send_event_builder(builder).await?;
+    client::publish(&nostr_client, builder).await?;
 
     println!(
         "Reacted with '{}' to event {}",

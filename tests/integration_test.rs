@@ -283,17 +283,92 @@ fn event_file_rejects_non_object_json() {
 
 #[test]
 fn event_file_rejects_empty_tag() {
-    let spec = parse_event_spec(r#"{"kind": 1, "tags": [["p", "abc"], []]}"#).unwrap();
+    let hex = "0".repeat(64);
+    let json = format!(r#"{{"kind": 1, "tags": [["p", "{}"], []]}}"#, hex);
+    let spec = parse_event_spec(&json).unwrap();
     let err = spec.parsed_tags().unwrap_err().to_string();
     assert!(err.contains("tags[1]"), "got: {}", err);
 }
 
 #[test]
 fn event_file_rejects_wrong_tag_shape() {
+    // `"tags": ["p"]` is an array of strings, not of tags: a type error.
     let err = parse_event_spec(r#"{"kind": 1, "tags": ["p"]}"#)
         .unwrap_err()
         .to_string();
     assert!(err.contains("unsigned event"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_a_tag_with_no_value() {
+    // `Tag::parse` accepts ["p"], which would publish a kind:3 entry that every
+    // relay and client ignores — and a kind:3 replaces the whole follow list.
+    let hex = "0".repeat(64);
+    let json = format!(r#"{{"kind": 3, "tags": [["p", "{}"], ["p"]]}}"#, hex);
+    let spec = parse_event_spec(&json).unwrap();
+    let err = spec.parsed_tags().unwrap_err().to_string();
+    assert!(
+        err.contains("tags[1]") && err.contains("no value"),
+        "got: {}",
+        err
+    );
+}
+
+#[test]
+fn event_file_rejects_npub_in_a_p_tag() {
+    // The documented follow-list recipe feeds hex pubkeys; pasting an npub must
+    // not silently drop that person from the published list.
+    let npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2";
+    let json = format!(r#"{{"kind": 3, "tags": [["p", "{}"]]}}"#, npub);
+    let err = parse_event_spec(&json)
+        .unwrap()
+        .parsed_tags()
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("tags[0]"), "got: {}", err);
+    assert!(err.contains("64-character hex"), "got: {}", err);
+    assert!(err.contains("nostaro decode"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_malformed_hex_in_p_and_e_tags() {
+    let too_short = "abc";
+    let not_hex = "zz00000000000000000000000000000000000000000000000000000000000z";
+    for (name, value) in [("p", too_short), ("e", not_hex)] {
+        let json = format!(r#"{{"kind": 1, "tags": [["{}", "{}"]]}}"#, name, value);
+        let err = parse_event_spec(&json)
+            .unwrap()
+            .parsed_tags()
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("64-character hex"),
+            "{} tag {:?} should be rejected, got: {}",
+            name,
+            value,
+            err
+        );
+    }
+}
+
+#[test]
+fn event_file_keeps_non_hex_tag_values_untouched() {
+    // Only p/e values are hex; every other tag stays free-form.
+    let spec =
+        parse_event_spec(r#"{"kind": 1, "tags": [["t", "nostr"], ["alt", "a note"]]}"#).unwrap();
+    assert_eq!(spec.parsed_tags().unwrap().len(), 2);
+}
+
+#[test]
+fn event_file_rejects_a_file_over_the_size_limit() {
+    let dir = scratch("event_file_too_big");
+    let path = dir.join("huge.json");
+    let padding = "x".repeat(8 * 1024 * 1024 + 1);
+    std::fs::write(&path, format!(r#"{{"kind":1,"content":"{}"}}"#, padding)).unwrap();
+
+    let err = load_event_spec(&path).unwrap_err().to_string();
+    assert!(err.contains("the limit is"), "got: {}", err);
+    std::fs::remove_file(&path).ok();
 }
 
 #[test]
@@ -363,17 +438,15 @@ fn out_writes_the_body_to_a_file_and_reports_the_line_count() {
     output::finish().unwrap();
     assert_eq!(std::fs::read_to_string(&empty_path).unwrap(), "");
 
-    // A command that produces no structured body must say so instead of
-    // leaving an empty file that looks like a valid (empty) result.
+    // Backstop for a supported command that emitted nothing structured: it must
+    // say so instead of leaving an empty file that looks like a valid result.
+    // (The CLI itself refuses --out-format json on unsupported commands before
+    // they run, so this can only be reached by a bug.)
     let unsupported = dir.join("unsupported.json");
     output::configure(Some(unsupported.clone()), OutFormat::Json);
     outln!("text only").unwrap();
     let err = output::finish().unwrap_err().to_string();
-    assert!(
-        err.contains("--out-format json is not supported"),
-        "{}",
-        err
-    );
+    assert!(err.contains("produced no JSON output"), "{}", err);
     assert!(!unsupported.exists());
 
     // No --out: nothing is created, output goes back to stdout.

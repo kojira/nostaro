@@ -12,6 +12,69 @@ use crate::keys;
 /// instead of silently publishing something different from what was written.
 const SIGNED_ONLY_FIELDS: [&str; 4] = ["id", "sig", "pubkey", "created_at"];
 
+/// Upper bound on an event file. Parsing holds the text, the `serde_json::Value`
+/// and the deserialized struct at the same time, so the resident cost is a few
+/// times the file size. 8 MiB still allows well over 100k tags.
+const MAX_EVENT_FILE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Tag names whose value is a pubkey or event id, and must be plain 64-char hex.
+const HEX_VALUE_TAGS: [&str; 2] = ["p", "e"];
+
+/// Bech32 prefixes people paste where hex is required.
+const BECH32_PREFIXES: [&str; 5] = ["npub1", "nsec1", "note1", "nevent1", "nprofile1"];
+
+fn is_hex_32_bytes(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+/// Validate one tag beyond what `Tag::parse` checks.
+///
+/// nostr 0.41's `Tag::parse` only rejects a completely empty tag: both `["p"]`
+/// (a name with no value) and `["p", "npub1..."]` (bech32 where hex is required)
+/// go through and produce an event that relays and clients quietly ignore. In a
+/// kind:3 that is destructive, because the event replaces the entire follow
+/// list — a single bad entry would drop that person silently.
+fn validate_tag(index: usize, values: &[String]) -> Result<()> {
+    let Some(name) = values.first() else {
+        bail!(
+            "tags[{}] is empty; every tag needs at least a name element, e.g. [\"p\", \"<hex>\"]",
+            index
+        );
+    };
+
+    if values.len() < 2 {
+        bail!(
+            "tags[{}] is [\"{}\"]: a name with no value. Write it as [\"{}\", \"<value>\"]",
+            index,
+            name,
+            name
+        );
+    }
+
+    let value = &values[1];
+    if HEX_VALUE_TAGS.contains(&name.as_str()) && !is_hex_32_bytes(value) {
+        let hint = BECH32_PREFIXES
+            .iter()
+            .find(|prefix| value.starts_with(*prefix))
+            .map(|prefix| {
+                format!(
+                    " That is a bech32 entity; get the hex form with `nostaro decode {}...`.",
+                    prefix
+                )
+            })
+            .unwrap_or_default();
+        bail!(
+            "tags[{}] is a \"{}\" tag whose value is not a 64-character hex string: \"{}\".{}",
+            index,
+            name,
+            value,
+            hint
+        );
+    }
+
+    Ok(())
+}
+
 /// An unsigned event as described by a `--file` JSON document.
 ///
 /// ```json
@@ -34,16 +97,11 @@ pub struct EventSpec {
 }
 
 impl EventSpec {
-    /// Convert the raw string arrays into nostr tags.
+    /// Validate and convert the raw string arrays into nostr tags.
     pub fn parsed_tags(&self) -> Result<Vec<Tag>> {
         let mut parsed = Vec::with_capacity(self.tags.len());
         for (index, values) in self.tags.iter().enumerate() {
-            if values.is_empty() {
-                bail!(
-                    "tags[{}] is empty; every tag needs at least a name element, e.g. [\"p\", \"<hex>\"]",
-                    index
-                );
-            }
+            validate_tag(index, values)?;
             let tag = Tag::parse(values.clone())
                 .with_context(|| format!("tags[{}] is not a valid nostr tag", index))?;
             parsed.push(tag);
@@ -89,6 +147,17 @@ pub fn parse_event_spec(json: &str) -> Result<EventSpec> {
 
 /// Read and parse an event file.
 pub fn load_event_spec(path: &Path) -> Result<EventSpec> {
+    let metadata = std::fs::metadata(path)
+        .with_context(|| format!("failed to read event file {}", path.display()))?;
+    if metadata.len() > MAX_EVENT_FILE_BYTES {
+        bail!(
+            "event file {} is {} bytes; the limit is {} bytes",
+            path.display(),
+            metadata.len(),
+            MAX_EVENT_FILE_BYTES
+        );
+    }
+
     let json = std::fs::read_to_string(path)
         .with_context(|| format!("failed to read event file {}", path.display()))?;
     parse_event_spec(&json).with_context(|| format!("invalid event file {}", path.display()))
@@ -139,7 +208,7 @@ pub async fn run(
     let tag_count = parsed_tags.len();
     println!("Publishing kind:{} event ({} tag(s))...", kind, tag_count);
     let builder = build_event(kind, content, parsed_tags);
-    let output = nostr_client.send_event_builder(builder).await?;
+    let output = client::publish(&nostr_client, builder).await?;
     println!("Event published! ID: {}", output.id().to_hex());
 
     nostr_client.disconnect().await;

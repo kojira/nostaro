@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{bail, Result};
 use nostr_sdk::prelude::*;
 use std::time::Duration;
 
@@ -24,9 +24,47 @@ pub async fn create_client_with_relay_list(keys: &Keys, relay_urls: &[String]) -
     Ok(client)
 }
 
+/// Turn the per-relay outcome of a publish into warnings, or an error when the
+/// event reached nobody.
+///
+/// `send_event_builder` answers `Ok` even when **every** relay rejected the
+/// event — the refusals only appear in `Output::failed` — so without this check
+/// nostaro reports success for an event nobody stored. That is a realistic
+/// outcome for a large kind:3, since relays enforce event-size and tag-count
+/// limits.
+pub fn check_publish_output<T>(output: &Output<T>) -> Result<()>
+where
+    T: std::fmt::Debug,
+{
+    for (relay, reason) in &output.failed {
+        eprintln!("Warning: {} rejected the event: {}", relay, reason);
+    }
+
+    if output.success.is_empty() {
+        if output.failed.is_empty() {
+            bail!("no relay accepted the event (no relay answered)");
+        }
+        let reasons: Vec<String> = output
+            .failed
+            .iter()
+            .map(|(relay, reason)| format!("{}: {}", relay, reason))
+            .collect();
+        bail!("no relay accepted the event ({})", reasons.join("; "));
+    }
+
+    Ok(())
+}
+
+/// Publish an event and confirm at least one relay accepted it.
+pub async fn publish(client: &Client, builder: EventBuilder) -> Result<Output<EventId>> {
+    let output = client.send_event_builder(builder).await?;
+    check_publish_output(&output)?;
+    Ok(output)
+}
+
 pub async fn post_note(client: &Client, content: &str) -> Result<()> {
     let builder = EventBuilder::text_note(content);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }
 
@@ -37,13 +75,13 @@ pub async fn reply_note(client: &Client, reply_to: &Event, content: &str) -> Res
         Tag::public_key(reply_to.pubkey),
     ];
     let builder = EventBuilder::text_note(content).tags(tags);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }
 
 pub async fn repost_event(client: &Client, event: &Event) -> Result<()> {
     let builder = EventBuilder::repost(event, None);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }
 
@@ -95,7 +133,8 @@ pub async fn fetch_profile_with_timeout(
 }
 
 pub async fn set_metadata(client: &Client, metadata: &Metadata) -> Result<()> {
-    client.set_metadata(metadata).await?;
+    let output = client.set_metadata(metadata).await?;
+    check_publish_output(&output)?;
     Ok(())
 }
 
@@ -162,7 +201,7 @@ pub async fn publish_contact_list(client: &Client, contacts: &[PublicKey]) -> Re
     }
 
     let builder = EventBuilder::new(Kind::ContactList, "").tags(tags);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
 
     Ok(())
 }
@@ -176,7 +215,8 @@ pub async fn fetch_event_by_id(client: &Client, event_id: &EventId) -> Result<Op
 }
 
 pub async fn send_dm(client: &Client, receiver: PublicKey, message: &str) -> Result<()> {
-    client.send_private_msg(receiver, message, []).await?;
+    let output = client.send_private_msg(receiver, message, []).await?;
+    check_publish_output(&output)?;
     Ok(())
 }
 
@@ -191,7 +231,7 @@ pub async fn send_dm_nip04(
     let encrypted = nip04::encrypt(keys.secret_key(), &receiver, message)?;
     let tags = vec![Tag::public_key(receiver)];
     let builder = EventBuilder::new(Kind::EncryptedDirectMessage, encrypted).tags(tags);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }
 
@@ -268,7 +308,7 @@ pub async fn fetch_channel_messages(
 
 pub async fn create_channel(client: &Client, content: &str) -> Result<EventId> {
     let builder = EventBuilder::new(Kind::ChannelCreation, content);
-    let output = client.send_event_builder(builder).await?;
+    let output = publish(client, builder).await?;
     Ok(*output.id())
 }
 
@@ -281,7 +321,7 @@ pub async fn edit_channel(
     let ch_hex = channel_id.to_hex();
     let tags = vec![Tag::parse(["e", &ch_hex, relay_url])?];
     let builder = EventBuilder::new(Kind::ChannelMetadata, content).tags(tags);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }
 
@@ -293,6 +333,6 @@ pub async fn post_channel_message(
     let ch_hex = channel_id.to_hex();
     let tags = vec![Tag::parse(["e", &ch_hex, "", "root"])?];
     let builder = EventBuilder::new(Kind::ChannelMessage, content).tags(tags);
-    client.send_event_builder(builder).await?;
+    publish(client, builder).await?;
     Ok(())
 }

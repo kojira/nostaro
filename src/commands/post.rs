@@ -44,7 +44,7 @@ pub async fn run(message: &str, quote: Option<&str>) -> Result<()> {
     } else {
         // Build event with extra tags
         let builder = EventBuilder::text_note(&content).tags(extra_tags);
-        let output = nostr_client.send_event_builder(builder).await?;
+        let output = client::publish(&nostr_client, builder).await?;
         println!("Event ID: {}", output.id().to_bech32()?);
     }
     println!("Note published successfully!");

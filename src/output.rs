@@ -135,11 +135,12 @@ pub fn finish() -> Result<()> {
         return Ok(());
     };
 
+    // Defensive: the CLI rejects `--out-format json` on commands without a JSON
+    // body *before* the command runs, so getting here means a supported command
+    // forgot to emit its document. All four are read-only, so failing this late
+    // cannot leave a half-published event behind.
     if sink.format == OutFormat::Json && !sink.json_written {
-        bail!(
-            "--out-format json is not supported by this command \
-             (it produced no structured output); re-run without --out-format json"
-        );
+        bail!("this command produced no JSON output; re-run without --out-format json");
     }
 
     if let Some(writer) = sink.writer.as_mut() {
