@@ -52,6 +52,53 @@ blossom_server = "https://blossom.primal.net"
 
 ---
 
+## グローバルオプション
+
+すべてのコマンドで、サブコマンドの前後どちらでも指定できます。
+
+| オプション | 説明 |
+| --- | --- |
+| `--config <PATH>` | 使用する設定ファイル (env: `NOSTARO_CONFIG`)。キャッシュも隣に置かれるため、設定ごとに独立します。 |
+| `--out <PATH>` | 大量出力の本体を stdout ではなくファイルへ書き出します。 |
+| `--out-format <text\|json>` | `--out` ファイルの形式 (既定 `text`)。`--out` が必須です。 |
+
+### `--out` — 大量出力を stdout から追い出す
+
+979 人フォローしているアカウントの `nostaro following` は約 77,000 文字を出力します。
+出力をエージェント（あるいはコンテキスト長を持つ何か）が読む場合、それだけで予算を
+使い切ってしまいます。`--out` は**本体**をファイルへ送り、stdout には要約だけを残します。
+
+```bash
+$ nostaro following --out following.txt
+Following 979 user(s):
+Wrote 979 line(s) to following.txt
+
+# スクリプトから扱うなら機械可読な形式で
+$ nostaro following --out following.json --out-format json
+Following 979 user(s):
+Wrote JSON output to following.json
+```
+
+- 対応コマンドは大量に出力しうる **`following`** / **`followers`** / **`timeline`** /
+  **`search`**。他のコマンドもフラグ自体は受け付けますが本体を持たないため、
+  紛らわしい空ファイルを残さずその旨を表示します
+  (`No file output for this command; X was not written.`)。
+- ファイルはシェルの `>` と同様に**上書き**されます。結果が空でもファイルは作成される
+  ので、「結果が 0 件」と「ファイルが無い」を取り違えません。
+- `--out` を付けなければ挙動は従来どおり（本体は stdout）です。
+- JSON 本体を持たないコマンドで `--out-format json` を指定するとエラーになります
+  （黙って text に落ちることはありません）。
+
+JSON の形:
+
+| コマンド | ドキュメント |
+| --- | --- |
+| `following`, `followers` | `{"count": N, "users": [{"npub", "hex", "name"}]}` |
+| `search` | `{"count": N, "events": [<nostr event>]}` |
+| `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+
+---
+
 ## コマンド
 
 ### 投稿 & リアクション
@@ -239,7 +286,46 @@ nostaro watch --json --keyword nostr
 ```bash
 # カスタム kind のイベントを投稿
 nostaro event --kind 30023 --content "Long-form content" --tag "d,my-article" --tag "title,My Article"
+
+# イベント全体を JSON ファイルで渡す（任意の kind・任意の数のタグ）
+nostaro event --file event.json
 ```
+
+`--file` は**未署名**イベント、つまり nostaro が計算する項目を除いたイベントを読みます。
+
+```json
+{
+  "kind": 3,
+  "content": "",
+  "tags": [["p", "<hex pubkey>"], ["p", "<hex pubkey>"]]
+}
+```
+
+- `kind` は必須。`content` は既定で `""`、`tags` は既定で `[]`。
+- 署名時に `pubkey` / `created_at` / `id` / `sig` は nostaro が埋めます。この 4 つが
+  ファイルに含まれていたら**無視せずエラー**にします。`id`/`sig` を持つファイルを
+  黙って受け取ると、書かれている内容とは**別のイベント**を発行することになるためです。
+- 未知のフィールドもエラーです。`"tags"` を `"tag"` と書き間違えたときに、タグが
+  すべて消えたイベントを黙って発行せず、その場で落ちます。
+- `--file` は `--kind` / `--tag` / `--content` と**併用できません**。ファイルが
+  イベントの完全な記述なので、どちらか一方のスタイルを使ってください。
+- **数千個のタグ**を持つイベント（1000 件の kind:3 フォローリストを 1000 個の `--tag`
+  引数で渡すのは非現実的）や、カンマを含むタグ値（`--tag` は `,` で分割する）を
+  発行できるのはこの方法だけです。
+
+#### フォローリストを 1 イベントで増やす
+
+`follow` / `unfollow` は 1 回に 1 人だけです。大量に追加したいときは、現在のリストを
+JSON で取得し、新しい kind:3 を組み立てて 1 イベントとして発行します。
+
+```bash
+nostaro following --out current.json --out-format json
+jq '{kind: 3, content: "", tags: ([.users[].hex] + ["<new hex pubkey>"] | map(["p", .]))}' \
+  current.json > follows.json
+nostaro event --file follows.json
+```
+
+kind:3 は常にリスト全体を置き換えるため、何人分であってもイベントは 1 つです。
 
 ### バニティキー生成
 

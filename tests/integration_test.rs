@@ -160,6 +160,228 @@ fn cache_store_and_retrieve_profile() {
     assert!(profile.picture.is_none());
 }
 
+// ── Event file input (`event --file`) ────────────────────────────────
+
+use nostaro::commands::event::{load_event_spec, parse_event_spec};
+
+/// Scratch directory for tests that touch the filesystem. `CARGO_TARGET_TMPDIR`
+/// keeps them inside `target/`, so nothing leaks into the user's temp dir.
+fn scratch(name: &str) -> PathBuf {
+    let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(name);
+    std::fs::create_dir_all(&dir).unwrap();
+    dir
+}
+
+#[test]
+fn event_file_minimal_document() {
+    let spec = parse_event_spec(r#"{"kind": 1, "content": "hello"}"#).unwrap();
+    assert_eq!(spec.kind, 1);
+    assert_eq!(spec.content, "hello");
+    assert!(spec.tags.is_empty());
+    assert!(spec.parsed_tags().unwrap().is_empty());
+}
+
+#[test]
+fn event_file_content_and_tags_default_to_empty() {
+    let spec = parse_event_spec(r#"{"kind": 3}"#).unwrap();
+    assert_eq!(spec.content, "");
+    assert!(spec.tags.is_empty());
+}
+
+#[test]
+fn event_file_carries_a_thousand_p_tags() {
+    // The whole point of the file input: a follow list that could never be
+    // passed as 1000 `--tag` arguments.
+    let pubkeys: Vec<String> = (0..1000).map(|i| format!("{:064x}", i)).collect();
+    let tags: Vec<Vec<String>> = pubkeys
+        .iter()
+        .map(|pk| vec!["p".into(), pk.clone()])
+        .collect();
+    let json = serde_json::json!({ "kind": 3, "content": "", "tags": tags }).to_string();
+
+    let spec = parse_event_spec(&json).unwrap();
+    assert_eq!(spec.kind, 3);
+    assert_eq!(spec.tags.len(), 1000);
+
+    let parsed = spec.parsed_tags().unwrap();
+    assert_eq!(parsed.len(), 1000);
+    // Every tag survives as a real nostr p tag, in file order.
+    for (index, tag) in parsed.iter().enumerate() {
+        assert_eq!(tag.as_slice(), ["p".to_string(), pubkeys[index].clone()]);
+    }
+
+    // ...and all 1000 of them end up in a single signed event, which is what a
+    // kind:3 follow list needs.
+    let keys = nostaro::keys::generate_keys();
+    let event = nostaro::commands::event::build_event(spec.kind, spec.content, parsed)
+        .sign_with_keys(&keys)
+        .unwrap();
+    assert_eq!(event.kind.as_u16(), 3);
+    assert_eq!(event.tags.len(), 1000);
+    assert!(event.verify().is_ok());
+}
+
+#[test]
+fn event_file_keeps_tag_values_containing_commas() {
+    // Something `--tag "key,value"` cannot express, since it splits on commas.
+    let spec = parse_event_spec(r#"{"kind": 1, "tags": [["alt", "a,b,c"]]}"#).unwrap();
+    let parsed = spec.parsed_tags().unwrap();
+    assert_eq!(
+        parsed[0].as_slice(),
+        ["alt".to_string(), "a,b,c".to_string()]
+    );
+}
+
+#[test]
+fn event_file_rejects_signed_only_fields() {
+    for field in ["id", "sig", "pubkey", "created_at"] {
+        let json = format!(r#"{{"kind": 1, "content": "x", "{}": "whatever"}}"#, field);
+        let err = parse_event_spec(&json).unwrap_err().to_string();
+        assert!(
+            err.contains(field) && err.contains("must not appear"),
+            "field {} should be rejected explicitly, got: {}",
+            field,
+            err
+        );
+    }
+}
+
+#[test]
+fn event_file_rejects_unknown_fields() {
+    // A "tag"/"tags" typo must not silently publish a tagless event.
+    let err = parse_event_spec(r#"{"kind": 1, "tag": [["p", "abc"]]}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unsigned event"), "got: {}", err);
+}
+
+#[test]
+fn event_file_requires_kind() {
+    let err = parse_event_spec(r#"{"content": "hello"}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unsigned event"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_empty_document() {
+    let err = parse_event_spec("   \n").unwrap_err().to_string();
+    assert!(err.contains("empty"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_broken_json() {
+    let err = parse_event_spec(r#"{"kind": 1,"#).unwrap_err().to_string();
+    assert!(err.contains("not valid JSON"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_non_object_json() {
+    let err = parse_event_spec("[1, 2, 3]").unwrap_err().to_string();
+    assert!(err.contains("JSON object"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_empty_tag() {
+    let spec = parse_event_spec(r#"{"kind": 1, "tags": [["p", "abc"], []]}"#).unwrap();
+    let err = spec.parsed_tags().unwrap_err().to_string();
+    assert!(err.contains("tags[1]"), "got: {}", err);
+}
+
+#[test]
+fn event_file_rejects_wrong_tag_shape() {
+    let err = parse_event_spec(r#"{"kind": 1, "tags": ["p"]}"#)
+        .unwrap_err()
+        .to_string();
+    assert!(err.contains("unsigned event"), "got: {}", err);
+}
+
+#[test]
+fn event_file_load_roundtrip_from_disk() {
+    let dir = scratch("event_file_load");
+    let path = dir.join("follow.json");
+    std::fs::write(
+        &path,
+        r#"{"kind": 3, "content": "", "tags": [["p", "abc"], ["p", "def"]]}"#,
+    )
+    .unwrap();
+
+    let spec = load_event_spec(&path).unwrap();
+    assert_eq!(spec.kind, 3);
+    assert_eq!(spec.tags.len(), 2);
+}
+
+#[test]
+fn event_file_missing_path_names_the_file() {
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("definitely_not_here.json");
+    std::fs::remove_file(&path).ok();
+    let err = load_event_spec(&path).unwrap_err().to_string();
+    assert!(err.contains("failed to read event file"), "got: {}", err);
+}
+
+// ── Output sink (`--out`) ────────────────────────────────────────────
+
+// The sink is process-global, so a single test owns it for the whole binary.
+#[test]
+fn out_writes_the_body_to_a_file_and_reports_the_line_count() {
+    use nostaro::outln;
+    use nostaro::output::{self, OutFormat};
+
+    let dir = scratch("output_sink");
+    let text_path = dir.join("body.txt");
+    std::fs::write(&text_path, "stale content that must be overwritten").unwrap();
+
+    output::configure(Some(text_path.clone()), OutFormat::Text);
+    assert!(!output::is_json());
+    outln!("first").unwrap();
+    outln!("second {}", 2).unwrap();
+    output::finish().unwrap();
+
+    assert_eq!(
+        std::fs::read_to_string(&text_path).unwrap(),
+        "first\nsecond 2\n"
+    );
+
+    // JSON mode: the document replaces the text rendering entirely.
+    let json_path = dir.join("body.json");
+    output::configure(Some(json_path.clone()), OutFormat::Json);
+    assert!(output::is_json());
+    outln!("this text body is dropped in json mode").unwrap();
+    output::write_json(&serde_json::json!({"count": 1, "users": ["npub1x"]})).unwrap();
+    output::finish().unwrap();
+
+    let written: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&json_path).unwrap()).unwrap();
+    assert_eq!(written["count"], 1);
+    assert_eq!(written["users"][0], "npub1x");
+
+    // A supported command whose result is empty still creates the file, so
+    // "no results" is distinguishable from "this command ignores --out".
+    let empty_path = dir.join("empty.txt");
+    output::configure(Some(empty_path.clone()), OutFormat::Text);
+    output::open_body().unwrap();
+    output::finish().unwrap();
+    assert_eq!(std::fs::read_to_string(&empty_path).unwrap(), "");
+
+    // A command that produces no structured body must say so instead of
+    // leaving an empty file that looks like a valid (empty) result.
+    let unsupported = dir.join("unsupported.json");
+    output::configure(Some(unsupported.clone()), OutFormat::Json);
+    outln!("text only").unwrap();
+    let err = output::finish().unwrap_err().to_string();
+    assert!(
+        err.contains("--out-format json is not supported"),
+        "{}",
+        err
+    );
+    assert!(!unsupported.exists());
+
+    // No --out: nothing is created, output goes back to stdout.
+    output::configure(None, OutFormat::Text);
+    outln!("back on stdout").unwrap();
+    output::finish().unwrap();
+}
+
 // ── CLI parsing ──────────────────────────────────────────────────────
 
 use clap::Parser;

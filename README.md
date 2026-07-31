@@ -52,6 +52,55 @@ blossom_server = "https://blossom.primal.net"
 
 ---
 
+## Global Options
+
+Accepted by every command, before or after the subcommand.
+
+| Option | Description |
+| --- | --- |
+| `--config <PATH>` | Config file to use (env: `NOSTARO_CONFIG`). The cache lives next to it, so separate configs stay isolated. |
+| `--out <PATH>` | Write the bulk output to a file instead of stdout. |
+| `--out-format <text\|json>` | Format of the `--out` file (default `text`). Requires `--out`. |
+
+### `--out` — keep bulk output out of stdout
+
+`nostaro following` on an account with 979 follows prints ~77k characters. When
+the output is being read by an agent (or anything else with a context window),
+that is the whole budget gone. `--out` sends the **body** to a file and leaves
+only the summary on stdout:
+
+```bash
+$ nostaro following --out following.txt
+Following 979 user(s):
+Wrote 979 line(s) to following.txt
+
+# Machine-readable instead, for scripting
+$ nostaro following --out following.json --out-format json
+Following 979 user(s):
+Wrote JSON output to following.json
+```
+
+- Supported by **`following`**, **`followers`**, **`timeline`** and **`search`**
+  — the commands that can print a lot. Any other command accepts the flag but
+  has no bulk body; it says so (`No file output for this command; X was not
+  written.`) instead of leaving a confusing empty file behind.
+- The file is **overwritten** (like a shell `>`), and it is created even when
+  the result is empty, so "no results" is an empty file rather than a missing
+  one.
+- Without `--out` nothing changes: the body goes to stdout exactly as before.
+- `--out-format json` is rejected on commands that have no JSON body, so it
+  never silently degrades to text.
+
+JSON shapes:
+
+| Command | Document |
+| --- | --- |
+| `following`, `followers` | `{"count": N, "users": [{"npub", "hex", "name"}]}` |
+| `search` | `{"count": N, "events": [<nostr event>]}` |
+| `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+
+---
+
 ## Commands
 
 ### Post & React
@@ -243,7 +292,49 @@ nostaro watch --json --keyword nostr
 ```bash
 # Post a custom kind event
 nostaro event --kind 30023 --content "Long-form content" --tag "d,my-article" --tag "title,My Article"
+
+# Or describe the whole event in a JSON file (any kind, any number of tags)
+nostaro event --file event.json
 ```
+
+`--file` reads an **unsigned** event, i.e. the event minus everything nostaro
+computes for you:
+
+```json
+{
+  "kind": 3,
+  "content": "",
+  "tags": [["p", "<hex pubkey>"], ["p", "<hex pubkey>"]]
+}
+```
+
+- `kind` is required; `content` defaults to `""` and `tags` to `[]`.
+- nostaro fills in `pubkey`, `created_at`, `id` and `sig` when it signs. Those
+  four fields are **rejected** if present in the file, rather than ignored: a
+  file carrying an `id`/`sig` would otherwise be published as a *different*
+  event than the one it describes.
+- Unknown fields are rejected too, so a `"tag"`/`"tags"` typo fails loudly
+  instead of publishing an event that silently lost all of its tags.
+- `--file` **cannot be combined** with `--kind` / `--tag` / `--content`: the
+  file is the complete description of the event. Use one style or the other.
+- This is the only way to publish an event with **thousands of tags** (a
+  1000-entry kind:3 follow list cannot be passed as 1000 `--tag` arguments), or
+  with tag values containing commas (`--tag` splits on `,`).
+
+#### Growing a follow list in one event
+
+`follow` / `unfollow` take one npub at a time. To add many people at once, fetch
+the current list as JSON, build the new kind:3 and publish it as a single event:
+
+```bash
+nostaro following --out current.json --out-format json
+jq '{kind: 3, content: "", tags: ([.users[].hex] + ["<new hex pubkey>"] | map(["p", .]))}' \
+  current.json > follows.json
+nostaro event --file follows.json
+```
+
+A kind:3 always replaces the whole list, so this is one event no matter how many
+people it contains.
 
 ### Vanity Key Generation
 
