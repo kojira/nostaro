@@ -55,7 +55,7 @@ enum Commands {
         note_id: String,
     },
 
-    /// View your timeline
+    /// View your timeline (--global for the relay-wide feed)
     Timeline {
         /// Maximum number of notes to fetch
         #[arg(short, long, default_value_t = 20)]
@@ -63,6 +63,10 @@ enum Commands {
         /// Show reactions for each note
         #[arg(long)]
         with_reactions: bool,
+        /// Fetch the newest kind:1 from the relays without filtering by author,
+        /// instead of the notes of the people you follow
+        #[arg(long)]
+        global: bool,
     },
 
     /// Search notes (NIP-50)
@@ -440,7 +444,8 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
         Commands::Timeline {
             limit,
             with_reactions,
-        } => commands::timeline::run(limit, with_reactions).await?,
+            global,
+        } => commands::timeline::run(limit, with_reactions, global).await?,
         Commands::Search { query, limit } => commands::search::run(&query, limit).await?,
         Commands::Profile { action } => match action {
             ProfileAction::Show { pubkey } => commands::profile::show(pubkey.as_deref()).await?,
@@ -775,10 +780,14 @@ mod tests {
     #[test]
     fn test_json_out_is_gated_to_the_commands_that_produce_it() {
         use clap::Parser;
-        let supported: [&[&str]; 4] = [
+        let supported: [&[&str]; 5] = [
             &["nostaro", "following"],
             &["nostaro", "followers"],
             &["nostaro", "timeline"],
+            // The global feed is the bulkiest read of the lot, so it has to be
+            // able to leave stdout. It rides on Timeline, so the pre-dispatch
+            // gate already covers it — this pins that it stays covered.
+            &["nostaro", "timeline", "--global"],
             &["nostaro", "search", "query"],
         ];
         for args in supported {
@@ -797,6 +806,50 @@ mod tests {
         for args in unsupported {
             let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
             assert!(!cli.command.writes_json_body(), "{:?}", args);
+        }
+    }
+
+    /// `timeline` without `--global` is the follow-based view it has always
+    /// been; the global feed is opt-in.
+    #[test]
+    fn test_timeline_is_follow_based_unless_global_is_asked_for() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "timeline"]).unwrap();
+        match cli.command {
+            Commands::Timeline {
+                limit,
+                with_reactions,
+                global,
+            } => {
+                assert_eq!(limit, 20);
+                assert!(!with_reactions);
+                assert!(!global, "timeline defaults to your follow set");
+            }
+            _ => panic!("wrong command"),
+        }
+    }
+
+    /// `--limit` means the same thing with and without `--global`: no separate
+    /// default, no cap of its own.
+    #[test]
+    fn test_timeline_global_takes_the_same_limit() {
+        use clap::Parser;
+        for (args, expected) in [
+            (vec!["nostaro", "timeline", "--global"], 20usize),
+            (vec!["nostaro", "timeline", "--global", "-l", "50"], 50),
+            (
+                vec!["nostaro", "timeline", "--global", "--limit", "500"],
+                500,
+            ),
+        ] {
+            let cli = Cli::try_parse_from(args.iter().copied()).unwrap();
+            match cli.command {
+                Commands::Timeline { limit, global, .. } => {
+                    assert!(global, "{:?}", args);
+                    assert_eq!(limit, expected, "{:?}", args);
+                }
+                _ => panic!("wrong command"),
+            }
         }
     }
 

@@ -105,7 +105,12 @@ JSON shapes:
 | --- | --- |
 | `following`, `followers` | `{"count": N, "users": [{"npub", "hex"}]}` |
 | `search` | `{"count": N, "events": [<nostr event>]}` |
-| `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+| `timeline`, `timeline --global` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+
+`timeline` and `timeline --global` render through the same code, so the document
+is the same either way — a caller does not have to branch on which one it ran.
+`following` stays meaningful in the global feed: it tells you whether you already
+follow the stranger who wrote the note.
 
 ---
 
@@ -136,11 +141,29 @@ nostaro timeline
 nostaro timeline --limit 50
 nostaro timeline --with-reactions
 
+# The relay-wide feed: newest notes from anyone, not just who you follow
+nostaro timeline --global
+nostaro timeline --global --limit 50
+nostaro timeline --global --limit 200 --out global.json --out-format json
+
 # Search notes (NIP-50)
 nostaro search "rust nostr" --limit 10
 ```
 
 `--with-reactions` shows reactions with reactor names fetched from the local cache.
+
+**`timeline` vs `timeline --global`**
+
+| | `timeline` | `timeline --global` |
+| --- | --- | --- |
+| Whose notes | the people you follow (plus you), topped up from the relay when your follow set is too quiet to fill `--limit` | **anyone** — the relay's newest kind:1, with no author filter |
+| Order | people you follow first, then newest first | newest first |
+| Cost | one kind:3 read plus one kind:1 read | the same; neither grows with the size of your follow set |
+
+Use `--global` to see what is happening on a relay right now. Widening your view
+is not a reason to follow more people — following is for choosing whom to keep
+up with. Both take the same `-l/--limit`, both fetch kind:1 only, and both use
+the relays from your config.
 
 ### Profile
 

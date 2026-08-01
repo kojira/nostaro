@@ -73,6 +73,27 @@ async fn fetch_reactions(
     Ok(reactions_by_event)
 }
 
+/// One filter for *all* the missing profiles: kind:0 with every pubkey in a
+/// single `authors` list, i.e. one relay round trip no matter how many people
+/// are involved.
+///
+/// Pure — it takes pubkeys and builds a filter, it talks to no relay.
+fn profile_batch_filter(pubkeys: Vec<PublicKey>) -> Filter {
+    Filter::new()
+        .kind(Kind::Metadata)
+        .authors(pubkeys)
+        .limit(500)
+}
+
+/// Profiles are resolved as one batch, never one lookup per person. This pins
+/// that shape: a name per author means calling this once per pubkey, which
+/// means it takes a `PublicKey` instead of a `Vec<PublicKey>`, and this line
+/// stops compiling. If you are here because of that error, you are about to
+/// re-add the round trip per author that #8/#9 removed — and on a global
+/// timeline the authors are strangers, so *every* one of them would miss the
+/// cache.
+const _: fn(Vec<PublicKey>) -> Filter = profile_batch_filter;
+
 async fn fetch_and_cache_profiles(
     nostr_client: &Client,
     pubkeys: Vec<PublicKey>,
@@ -87,10 +108,7 @@ async fn fetch_and_cache_profiles(
         return Ok(());
     }
 
-    let filter = Filter::new()
-        .kind(Kind::Metadata)
-        .authors(missing_pubkeys)
-        .limit(500);
+    let filter = profile_batch_filter(missing_pubkeys);
 
     let events = nostr_client
         .fetch_events(filter, Duration::from_secs(10))
@@ -111,29 +129,75 @@ async fn fetch_and_cache_profiles(
     Ok(())
 }
 
-pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
-    let config = NostaroConfig::load()?;
-    let keys = keys::keys_from_config(&config)?;
-    let nostr_client = client::create_client(&keys, &config).await?;
+/// The `--out-format json` document.
+///
+/// Both `timeline` and `timeline --global` go through here, so the two produce
+/// the same shape — a caller does not have to branch on which one it ran.
+/// `following` is still answered for the global feed (from the one kind:3 read
+/// the command already does), so an agent looking at a stranger's note can tell
+/// whether it already follows them.
+///
+/// Pure — it renders what has already been fetched and talks to no relay; the
+/// cache is only read for names that are already there.
+fn to_json(
+    events: &[Event],
+    following_set: &HashSet<PublicKey>,
+    own_pubkey: PublicKey,
+    reactions_by_event: &HashMap<EventId, Vec<Event>>,
+    cache: Option<&CacheDb>,
+) -> Result<serde_json::Value> {
+    let mut notes = Vec::with_capacity(events.len());
+    for event in events {
+        let reactions: Vec<serde_json::Value> = reactions_by_event
+            .get(&event.id)
+            .map(|reactions| {
+                reactions
+                    .iter()
+                    .map(|reaction| {
+                        let (npub, name, is_self) = reactor_identity(reaction, own_pubkey, cache);
+                        serde_json::json!({
+                            "emoji": reaction_emoji(reaction),
+                            "npub": npub,
+                            "name": name,
+                            "is_self": is_self,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
 
-    println!("Fetching timeline...\n");
+        notes.push(serde_json::json!({
+            "event": serde_json::to_value(event)?,
+            "following": following_set.contains(&event.pubkey),
+            "is_self": event.pubkey == own_pubkey,
+            "reactions": reactions,
+        }));
+    }
 
-    let contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
-    let following_set: HashSet<PublicKey> = contacts.iter().copied().collect();
+    Ok(serde_json::json!({
+        "count": notes.len(),
+        "notes": notes,
+    }))
+}
 
-    let mut authors = contacts.clone();
-    authors.push(keys.public_key());
-
+/// Fetch the newest kind:1 written by the people the user follows (plus the
+/// user), topped up with the relay-wide feed when the follow set is too quiet
+/// to fill `limit`.
+async fn fetch_following(
+    nostr_client: &Client,
+    authors: &[PublicKey],
+    limit: usize,
+) -> Result<Vec<Event>> {
     let mut all_events = Vec::new();
 
     if !authors.is_empty() {
         let followed_events =
-            client::fetch_timeline_for_authors(&nostr_client, &authors, limit).await?;
+            client::fetch_timeline_for_authors(nostr_client, authors, limit).await?;
         all_events.extend(followed_events);
     }
 
     if all_events.len() < limit {
-        let global_events = client::fetch_timeline(&nostr_client, limit).await?;
+        let global_events = client::fetch_timeline(nostr_client, limit).await?;
         let seen: HashSet<EventId> = all_events.iter().map(|e| e.id).collect();
         for event in global_events {
             if !seen.contains(&event.id) {
@@ -142,15 +206,54 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
         }
     }
 
-    all_events.sort_by(|a, b| {
-        let a_following = following_set.contains(&a.pubkey) || a.pubkey == keys.public_key();
-        let b_following = following_set.contains(&b.pubkey) || b.pubkey == keys.public_key();
-        match (a_following, b_following) {
-            (true, false) => std::cmp::Ordering::Less,
-            (false, true) => std::cmp::Ordering::Greater,
-            _ => b.created_at.cmp(&a.created_at),
-        }
-    });
+    Ok(all_events)
+}
+
+/// `global` swaps the author filter off — `timeline` stays the follow-based
+/// view it has always been, `timeline --global` is "what is on the relay right
+/// now, whoever wrote it". Everything after the fetch (caching, reactions,
+/// rendering, the JSON document) is shared, so the two views cannot drift apart.
+pub async fn run(limit: usize, with_reactions: bool, global: bool) -> Result<()> {
+    let config = NostaroConfig::load()?;
+    let keys = keys::keys_from_config(&config)?;
+    let nostr_client = client::create_client(&keys, &config).await?;
+
+    if global {
+        println!("Fetching global timeline...\n");
+    } else {
+        println!("Fetching timeline...\n");
+    }
+
+    // Read once in both modes. This is a single kind:3 — constant in the number
+    // of follows — and it is only used to label who you already follow, never
+    // expanded into a profile lookup per author.
+    let contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
+    let following_set: HashSet<PublicKey> = contacts.iter().copied().collect();
+
+    let mut all_events = if global {
+        // One author-less filter, so the cost does not grow with the size of
+        // the follow set.
+        client::fetch_timeline(&nostr_client, limit).await?
+    } else {
+        let mut authors = contacts.clone();
+        authors.push(keys.public_key());
+        fetch_following(&nostr_client, &authors, limit).await?
+    };
+
+    if global {
+        // Nobody is privileged in the global feed: newest first, full stop.
+        all_events.sort_by_key(|event| std::cmp::Reverse(event.created_at));
+    } else {
+        all_events.sort_by(|a, b| {
+            let a_following = following_set.contains(&a.pubkey) || a.pubkey == keys.public_key();
+            let b_following = following_set.contains(&b.pubkey) || b.pubkey == keys.public_key();
+            match (a_following, b_following) {
+                (true, false) => std::cmp::Ordering::Less,
+                (false, true) => std::cmp::Ordering::Greater,
+                _ => b.created_at.cmp(&a.created_at),
+            }
+        });
+    }
 
     all_events.truncate(limit);
 
@@ -202,38 +305,13 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
     let own_pubkey = keys.public_key();
 
     if output::is_json() {
-        let mut notes = Vec::with_capacity(all_events.len());
-        for event in &all_events {
-            let reactions: Vec<serde_json::Value> = reactions_by_event
-                .get(&event.id)
-                .map(|reactions| {
-                    reactions
-                        .iter()
-                        .map(|reaction| {
-                            let (npub, name, is_self) =
-                                reactor_identity(reaction, own_pubkey, cache.as_ref());
-                            serde_json::json!({
-                                "emoji": reaction_emoji(reaction),
-                                "npub": npub,
-                                "name": name,
-                                "is_self": is_self,
-                            })
-                        })
-                        .collect()
-                })
-                .unwrap_or_default();
-
-            notes.push(serde_json::json!({
-                "event": serde_json::to_value(event)?,
-                "following": following_set.contains(&event.pubkey),
-                "is_self": event.pubkey == own_pubkey,
-                "reactions": reactions,
-            }));
-        }
-        output::write_json(&serde_json::json!({
-            "count": notes.len(),
-            "notes": notes,
-        }))?;
+        output::write_json(&to_json(
+            &all_events,
+            &following_set,
+            own_pubkey,
+            &reactions_by_event,
+            cache.as_ref(),
+        )?)?;
 
         if !all_events.is_empty() {
             println!("\nShowing {} note(s).", all_events.len());
@@ -310,4 +388,152 @@ pub async fn run(limit: usize, with_reactions: bool) -> Result<()> {
 
     nostr_client.disconnect().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn note(keys: &Keys, content: &str) -> Event {
+        EventBuilder::text_note(content)
+            .sign_with_keys(keys)
+            .unwrap()
+    }
+
+    /// The key set of every note in the document, which is what a caller has to
+    /// be able to rely on.
+    fn note_key_sets(document: &serde_json::Value) -> Vec<Vec<String>> {
+        document["notes"]
+            .as_array()
+            .expect("notes is an array")
+            .iter()
+            .map(|note| {
+                note.as_object()
+                    .expect("a note is an object")
+                    .keys()
+                    .cloned()
+                    .collect()
+            })
+            .collect()
+    }
+
+    /// One filter for everyone. 500 strangers on a global timeline cost one
+    /// relay read, not 500 — the regression #8 hit with a 979-entry follow list.
+    #[test]
+    fn profiles_are_resolved_in_a_single_batched_filter() {
+        let pubkeys: Vec<PublicKey> = (0..500).map(|_| Keys::generate().public_key()).collect();
+        let filter = profile_batch_filter(pubkeys.clone());
+
+        let authors = filter.authors.expect("the batch names its authors");
+        assert_eq!(
+            authors.len(),
+            pubkeys.len(),
+            "every pubkey rides in the same filter"
+        );
+        let kinds = filter.kinds.expect("the batch is restricted to one kind");
+        assert_eq!(kinds.len(), 1);
+        assert!(kinds.contains(&Kind::Metadata));
+    }
+
+    /// The global feed does not resolve names at all, so it never reaches the
+    /// kind:0 path in the first place: `to_json` renders bare events and the
+    /// text body prints npubs.
+    #[test]
+    fn the_json_body_carries_no_profile_name_for_note_authors() {
+        let author = Keys::generate();
+        let events = vec![note(&author, "hello from a stranger")];
+        let document = to_json(
+            &events,
+            &HashSet::new(),
+            Keys::generate().public_key(),
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+        assert_eq!(
+            note_key_sets(&document),
+            vec![vec!["event", "following", "is_self", "reactions"]],
+            "a note is the raw event plus follow/self/reactions — no resolved name"
+        );
+        assert!(
+            document["notes"][0]["event"].get("name").is_none()
+                && document["notes"][0]["event"].get("display_name").is_none(),
+            "the embedded event is the event as the relay sent it"
+        );
+    }
+
+    /// `timeline` and `timeline --global` render through the same `to_json`, so
+    /// a caller reads one shape either way — even though what comes back
+    /// differs: the follow-based view is people you follow, the global view is
+    /// whoever posted.
+    #[test]
+    fn global_and_follow_based_json_share_one_shape() {
+        let me = Keys::generate();
+        let followed = Keys::generate();
+        let stranger = Keys::generate();
+        let following: HashSet<PublicKey> = [followed.public_key()].into_iter().collect();
+
+        // What `timeline` sees: the follow set plus yourself.
+        let follow_based = to_json(
+            &[note(&me, "mine"), note(&followed, "someone i follow")],
+            &following,
+            me.public_key(),
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+        // What `timeline --global` sees: the same follow set is still known (one
+        // kind:3 read), but the notes come from anyone.
+        let global = to_json(
+            &[
+                note(&stranger, "someone i do not follow"),
+                note(&followed, "someone i follow"),
+            ],
+            &following,
+            me.public_key(),
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+
+        let expected = vec![
+            vec!["event", "following", "is_self", "reactions"],
+            vec!["event", "following", "is_self", "reactions"],
+        ];
+        for document in [&follow_based, &global] {
+            assert_eq!(document["count"], 2);
+            assert_eq!(note_key_sets(document), expected);
+        }
+
+        assert_eq!(follow_based["notes"][0]["is_self"], true);
+        assert_eq!(follow_based["notes"][1]["following"], true);
+
+        assert_eq!(
+            global["notes"][0]["following"], false,
+            "a stranger's note is reported as not-followed, not dropped"
+        );
+        assert_eq!(global["notes"][0]["is_self"], false);
+        assert_eq!(
+            global["notes"][1]["following"], true,
+            "the global feed still tells you who you already follow"
+        );
+    }
+
+    /// An empty global feed is still a document: `count: 0` with an empty array,
+    /// never a missing `notes` key.
+    #[test]
+    fn json_of_an_empty_timeline_is_still_a_document() {
+        let document = to_json(
+            &[],
+            &HashSet::new(),
+            Keys::generate().public_key(),
+            &HashMap::new(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(document["count"], 0);
+        assert_eq!(document["notes"].as_array().unwrap().len(), 0);
+    }
 }

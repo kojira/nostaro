@@ -85,12 +85,38 @@ pub async fn repost_event(client: &Client, event: &Event) -> Result<()> {
     Ok(())
 }
 
+/// The filter behind the global timeline: the newest kind:1, **with no author
+/// constraint at all**.
+///
+/// Pure — it takes a limit and builds a filter, it talks to no relay.
+pub fn global_timeline_filter(limit: usize) -> Filter {
+    Filter::new().kind(Kind::TextNote).limit(limit)
+}
+
+/// The global timeline is built from a limit and nothing else: no
+/// `&[PublicKey]`, no `&Client`, no `async`. This pins that shape — narrowing
+/// the global feed back to a follow set means `global_timeline_filter` has to
+/// take authors, and this line stops compiling. If you are here because of that
+/// error, you are turning "what is happening on the relay" back into "what the
+/// people I already follow said", which is the gap #10 exists to close.
+const _: fn(usize) -> Filter = global_timeline_filter;
+
 pub async fn fetch_timeline(client: &Client, limit: usize) -> Result<Vec<Event>> {
-    let filter = Filter::new().kind(Kind::TextNote).limit(limit);
-    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
+    let events = client
+        .fetch_events(global_timeline_filter(limit), Duration::from_secs(10))
+        .await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
     Ok(events)
+}
+
+/// The filter behind the follow-based timeline: the newest kind:1 **from these
+/// authors**. The counterpart of [`global_timeline_filter`].
+pub fn timeline_filter_for_authors(authors: &[PublicKey], limit: usize) -> Filter {
+    Filter::new()
+        .kind(Kind::TextNote)
+        .authors(authors.to_vec())
+        .limit(limit)
 }
 
 pub async fn fetch_timeline_for_authors(
@@ -98,10 +124,7 @@ pub async fn fetch_timeline_for_authors(
     authors: &[PublicKey],
     limit: usize,
 ) -> Result<Vec<Event>> {
-    let filter = Filter::new()
-        .kind(Kind::TextNote)
-        .authors(authors.to_vec())
-        .limit(limit);
+    let filter = timeline_filter_for_authors(authors, limit);
     let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
     let mut events: Vec<Event> = events.into_iter().collect();
     events.sort_by_key(|e| std::cmp::Reverse(e.created_at));
@@ -335,4 +358,70 @@ pub async fn post_channel_message(
     let builder = EventBuilder::new(Kind::ChannelMessage, content).tags(tags);
     publish(client, builder).await?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The whole point of the global timeline: no author constraint, so the
+    /// relay is free to answer with anyone — including people the user does not
+    /// follow.
+    #[test]
+    fn global_timeline_filter_does_not_narrow_by_author() {
+        let filter = global_timeline_filter(20);
+        assert!(
+            filter.authors.is_none(),
+            "the global timeline must not carry an author list: {:?}",
+            filter.authors
+        );
+    }
+
+    /// Contrast with the follow-based timeline, which does carry authors. Same
+    /// kind, same limit — the author list is the only difference.
+    #[test]
+    fn follow_timeline_filter_does_narrow_by_author() {
+        let authors: Vec<PublicKey> = (0..3).map(|_| Keys::generate().public_key()).collect();
+        let filter = timeline_filter_for_authors(&authors, 20);
+
+        let carried = filter
+            .authors
+            .expect("the follow timeline filters by author");
+        assert_eq!(carried.len(), authors.len());
+        for author in &authors {
+            assert!(carried.contains(author));
+        }
+        assert_eq!(filter.kinds, global_timeline_filter(20).kinds);
+        assert_eq!(filter.limit, global_timeline_filter(20).limit);
+    }
+
+    /// kind:1 only. Other kinds are not part of #10 and must not leak in.
+    #[test]
+    fn global_timeline_filter_is_text_notes_only() {
+        let kinds = global_timeline_filter(20)
+            .kinds
+            .expect("the global timeline is restricted to one kind");
+        assert_eq!(kinds.len(), 1);
+        assert!(kinds.contains(&Kind::TextNote));
+    }
+
+    #[test]
+    fn global_timeline_filter_carries_the_requested_limit() {
+        for limit in [1usize, 20, 50, 500] {
+            assert_eq!(global_timeline_filter(limit).limit, Some(limit));
+        }
+    }
+
+    /// kind + limit and nothing else. No since/until/search/ids/tag query: the
+    /// goal is "the newest N notes, whoever wrote them", and every extra
+    /// dimension is a filter option nobody asked for.
+    #[test]
+    fn global_timeline_filter_adds_no_other_constraints() {
+        let filter = global_timeline_filter(20);
+        assert!(filter.ids.is_none());
+        assert!(filter.search.is_none());
+        assert!(filter.since.is_none());
+        assert!(filter.until.is_none());
+        assert!(filter.generic_tags.is_empty());
+    }
 }
