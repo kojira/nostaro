@@ -100,7 +100,12 @@ JSON の形:
 | --- | --- |
 | `following`, `followers` | `{"count": N, "users": [{"npub", "hex"}]}` |
 | `search` | `{"count": N, "events": [<nostr event>]}` |
-| `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+| `timeline`, `timeline --global` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+
+`timeline` と `timeline --global` は同じコードで描画されるため、ドキュメントの形は
+どちらでも同じです（呼び出し側がどちらを実行したかで分岐する必要はありません）。
+グローバルでも `following` は意味を持ちます — そのノートを書いた相手を自分が既に
+フォローしているかどうかが分かります。
 
 ---
 
@@ -129,10 +134,38 @@ nostaro react <note_id> "🤙"
 # タイムラインを表示 (デフォルト: 20件)
 nostaro timeline
 nostaro timeline --limit 50
+nostaro timeline --with-reactions
+
+# グローバルタイムライン: フォローに関係なくリレーの最新ノートを表示
+nostaro timeline --global
+nostaro timeline --global --limit 50
+nostaro timeline --global --limit 200 --out global.json --out-format json
 
 # ノートを検索 (NIP-50)
 nostaro search "rust nostr" --limit 10
 ```
+
+`--with-reactions` はリアクションを表示します。リアクションした人の名前はローカル
+キャッシュから読みます。キャッシュに無い分は、同じ実行の中でまとめて 1 回引いてから
+キャッシュを読みます。
+
+**`timeline` と `timeline --global` の違い**
+
+| | `timeline` | `timeline --global` |
+| --- | --- | --- |
+| 誰のノートか | フォローしている人（と自分）。`--limit` に満たなければリレー全体から補完 | **誰でも**。リレーの最新 kind:1 を作者で絞らずに取得 |
+| 並び順 | フォロー中の人を優先し、その中で新しい順 | 新しい順 |
+| コスト | kind:3 を 1 回 + kind:1 を 1 回。補完が走ると kind:1 は **2 回** | kind:3 を 1 回 + kind:1 を 1 回。補完は走らない |
+| `--with-reactions` 併用時のコスト | 上記に加えて kind:7 を 1 回、リアクションがあればキャッシュ未取得のリアクタ分の kind:0 を **0〜1 回**（バッチ。全員キャッシュ済みなら 0 回） | 同じ |
+
+どちらもフォロー数に比例しません。1 人フォローでも 1000 人フォローでも読むのは上の
+回数だけです。kind:0 はキャッシュに無いリアクタをまとめて 1 回で引き（全員キャッシュ
+済みなら 1 回も引きません）、1 人ずつ引くことはありません。
+
+「いまリレーで何が起きているか」を見たいときは `--global` を使ってください。視野を
+広げるためにフォローを増やす必要はありません（フォローは継続的に追いたい相手を選ぶ
+操作です）。`-l/--limit` の扱いは共通、取得する kind は両方とも 1 のみ、リレーは
+config の設定をそのまま使います。
 
 ### プロフィール
 

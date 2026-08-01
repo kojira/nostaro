@@ -105,7 +105,12 @@ JSON shapes:
 | --- | --- |
 | `following`, `followers` | `{"count": N, "users": [{"npub", "hex"}]}` |
 | `search` | `{"count": N, "events": [<nostr event>]}` |
-| `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+| `timeline`, `timeline --global` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
+
+`timeline` and `timeline --global` render through the same code, so the document
+is the same either way — a caller does not have to branch on which one it ran.
+`following` stays meaningful in the global feed: it tells you whether you already
+follow the stranger who wrote the note.
 
 ---
 
@@ -136,11 +141,36 @@ nostaro timeline
 nostaro timeline --limit 50
 nostaro timeline --with-reactions
 
+# The relay-wide feed: newest notes from anyone, not just who you follow
+nostaro timeline --global
+nostaro timeline --global --limit 50
+nostaro timeline --global --limit 200 --out global.json --out-format json
+
 # Search notes (NIP-50)
 nostaro search "rust nostr" --limit 10
 ```
 
-`--with-reactions` shows reactions with reactor names fetched from the local cache.
+`--with-reactions` shows reactions with reactor names read from the local cache —
+within the same run, the reactors missing from it are fetched in one batch first.
+
+**`timeline` vs `timeline --global`**
+
+| | `timeline` | `timeline --global` |
+| --- | --- | --- |
+| Whose notes | the people you follow (plus you), topped up from the relay when your follow set is too quiet to fill `--limit` | **anyone** — the relay's newest kind:1, with no author filter |
+| Order | people you follow first, then newest first | newest first |
+| Cost | one kind:3 read plus one kind:1 read — **two** kind:1 reads when the top-up runs | one kind:3 read plus one kind:1 read; the top-up never runs |
+| Cost with `--with-reactions` | the above plus one kind:7 read, plus — when there are reactions — **zero or one** batched kind:0 read for the reactors that are not in the local cache yet (zero when they all are) | the same |
+
+Neither grows with the size of your follow set: those are all the reads there
+are, whether you follow one person or a thousand. The kind:0 read asks for every
+uncached reactor at once — and is skipped entirely when none is missing — never
+one request per person.
+
+Use `--global` to see what is happening on a relay right now. Widening your view
+is not a reason to follow more people — following is for choosing whom to keep
+up with. Both take the same `-l/--limit`, both fetch kind:1 only, and both use
+the relays from your config.
 
 ### Profile
 
