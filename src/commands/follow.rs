@@ -14,7 +14,8 @@ use crate::utils::resolve_pubkey;
 /// Deliberately no display name. Listing a follow set is one kind:3 read; a
 /// name per entry would be one kind:0 read per entry on top of it (979 follows
 /// meant 979 round trips), which dwarfs the actual work and is pure waste for
-/// `--out-format json`. Names are `nostaro profile show --pubkey <hex>`'s job.
+/// `--out-format json`. Names are `nostaro profile show --pubkey <npub or hex>`'s
+/// job.
 struct Entry {
     npub: String,
     hex: String,
@@ -33,6 +34,14 @@ fn describe(pubkeys: &[PublicKey]) -> Result<Vec<Entry>> {
         })
         .collect()
 }
+
+/// Assembling a listing takes pubkeys and nothing else — no client, no `async`,
+/// so it cannot reach a relay. This pins that shape: putting a name back on an
+/// entry means fetching a kind:0 per entry, which means `describe` has to grow a
+/// `&Client` or become `async`, and this line stops compiling. If you are here
+/// because of that error, you are about to re-add 979 round trips to a
+/// 979-follow listing — that is the cost #8 removed.
+const _: fn(&[PublicKey]) -> Result<Vec<Entry>> = describe;
 
 /// The `--out-format json` document: npub and hex per user, nothing else.
 fn to_json(entries: &[Entry]) -> serde_json::Value {
@@ -184,24 +193,6 @@ mod tests {
         (0..3).map(|_| Keys::generate().public_key()).collect()
     }
 
-    /// The point of #8: listing a follow set is *one* kind:3 read. Nothing in
-    /// this module may reach for a kind:0 to decorate the listing with names —
-    /// that turned a 979-follow listing into 979 extra round trips. Names live
-    /// in `nostaro profile show`.
-    #[test]
-    fn listing_never_fetches_profiles() {
-        let source = include_str!("follow.rs");
-        // Skip this module so the test does not match its own explanation.
-        let code = source
-            .split("#[cfg(test)]")
-            .next()
-            .expect("split always yields at least one part");
-        assert!(
-            !code.contains("fetch_profile"),
-            "following/followers must not read kind:0; use `profile show` for names"
-        );
-    }
-
     #[test]
     fn describe_yields_npub_and_hex_only() {
         let pubkeys = sample_pubkeys();
@@ -224,10 +215,17 @@ mod tests {
         assert_eq!(users.len(), pubkeys.len());
         for (user, pubkey) in users.iter().zip(&pubkeys) {
             let object = user.as_object().unwrap();
+            // Key *set*, not key order: with `preserve_order` on, a serde_json
+            // map keeps insertion order instead of sorting, and an ordered
+            // compare would fail without the output having changed.
+            assert!(
+                object.contains_key("npub") && object.contains_key("hex"),
+                "the JSON body carries npub and hex"
+            );
             assert_eq!(
-                object.keys().collect::<Vec<_>>(),
-                vec!["hex", "npub"],
-                "the JSON body is npub + hex, nothing else"
+                object.len(),
+                2,
+                "the JSON body is npub + hex, nothing else (notably no name)"
             );
             assert_eq!(object["npub"], pubkey.to_bech32().unwrap());
             assert_eq!(object["hex"], pubkey.to_hex());
@@ -252,9 +250,11 @@ mod tests {
         use crate::output::OutFormat;
         use std::path::PathBuf;
 
+        // pid in the name: two `cargo test` runs over the same checkout would
+        // otherwise write the same file and read each other's body.
         let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("target")
-            .join("follow-test-tmp");
+            .join(format!("nostaro_test_{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("following.txt");
 
@@ -267,6 +267,7 @@ mod tests {
         output::configure(None, OutFormat::Text);
 
         let body = std::fs::read_to_string(&path).unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
         let expected: String = pubkeys
             .iter()
             .map(|pubkey| format!("  {}\n", pubkey.to_bech32().unwrap()))
