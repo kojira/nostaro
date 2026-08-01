@@ -85,13 +85,21 @@ fn profile_batch_filter(pubkeys: Vec<PublicKey>) -> Filter {
         .limit(500)
 }
 
-/// Profiles are resolved as one batch, never one lookup per person. This pins
-/// that shape: a name per author means calling this once per pubkey, which
-/// means it takes a `PublicKey` instead of a `Vec<PublicKey>`, and this line
-/// stops compiling. If you are here because of that error, you are about to
-/// re-add the round trip per author that #8/#9 removed — and on a global
-/// timeline the authors are strangers, so *every* one of them would miss the
-/// cache.
+/// Pins the *argument type* — a filter is built from a whole list of pubkeys,
+/// not from one. Narrowing this to a single `PublicKey` stops the line
+/// compiling.
+///
+/// That is all it does. It does **not** guarantee the number of round trips:
+/// `profile_batch_filter` is pure, so nothing stops a caller from looping over
+/// it a pubkey at a time. The one-read property lives in
+/// `fetch_and_cache_profiles`, which calls `fetch_events` exactly once, and is
+/// held by review rather than by the type system. Contrast `follow.rs`'s
+/// `describe`, which takes no `&Client` and is not `async`, so it *cannot*
+/// reach a relay at all — that pin is the strong kind, this one is not.
+///
+/// Keep the batch shape anyway: on a global timeline the authors are strangers,
+/// so *every* one of them misses the cache, and a per-author lookup is the 979
+/// round trips #8/#9 removed.
 const _: fn(Vec<PublicKey>) -> Filter = profile_batch_filter;
 
 async fn fetch_and_cache_profiles(
@@ -209,19 +217,36 @@ async fn fetch_following(
     Ok(all_events)
 }
 
-/// `global` swaps the author filter off — `timeline` stays the follow-based
-/// view it has always been, `timeline --global` is "what is on the relay right
-/// now, whoever wrote it". Everything after the fetch (caching, reactions,
-/// rendering, the JSON document) is shared, so the two views cannot drift apart.
-pub async fn run(limit: usize, with_reactions: bool, global: bool) -> Result<()> {
+/// Which feed `timeline` is showing.
+///
+/// A `bool` would work, and that is what this was: `run(limit, with_reactions,
+/// global)` put two `bool`s side by side, where swapping them still compiles
+/// and every test still passes. A type the caller has to name cannot be
+/// swapped with `with_reactions` by accident. This is the same argument the
+/// rest of #10 makes with `const _` — the internal representation, not a new
+/// option: the CLI surface is still the `--global` flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TimelineScope {
+    /// The people you follow (plus you), topped up from the relay when the
+    /// follow set is too quiet to fill `limit`.
+    Following,
+    /// The relay's newest kind:1, whoever wrote them.
+    Global,
+}
+
+/// [`TimelineScope::Global`] swaps the author filter off — `timeline` stays the
+/// follow-based view it has always been, `timeline --global` is "what is on the
+/// relay right now, whoever wrote it". Everything after the fetch (caching,
+/// reactions, rendering, the JSON document) is shared, so the two views cannot
+/// drift apart.
+pub async fn run(limit: usize, with_reactions: bool, scope: TimelineScope) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
 
-    if global {
-        println!("Fetching global timeline...\n");
-    } else {
-        println!("Fetching timeline...\n");
+    match scope {
+        TimelineScope::Global => println!("Fetching global timeline...\n"),
+        TimelineScope::Following => println!("Fetching timeline...\n"),
     }
 
     // Read once in both modes. This is a single kind:3 — constant in the number
@@ -230,21 +255,27 @@ pub async fn run(limit: usize, with_reactions: bool, global: bool) -> Result<()>
     let contacts = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
     let following_set: HashSet<PublicKey> = contacts.iter().copied().collect();
 
-    let mut all_events = if global {
+    let mut all_events = match scope {
         // One author-less filter, so the cost does not grow with the size of
         // the follow set.
-        client::fetch_timeline(&nostr_client, limit).await?
-    } else {
-        let mut authors = contacts.clone();
-        authors.push(keys.public_key());
-        fetch_following(&nostr_client, &authors, limit).await?
+        TimelineScope::Global => client::fetch_timeline(&nostr_client, limit).await?,
+        TimelineScope::Following => {
+            let mut authors = contacts.clone();
+            authors.push(keys.public_key());
+            fetch_following(&nostr_client, &authors, limit).await?
+        }
     };
 
-    if global {
+    match scope {
         // Nobody is privileged in the global feed: newest first, full stop.
-        all_events.sort_by_key(|event| std::cmp::Reverse(event.created_at));
-    } else {
-        all_events.sort_by(|a, b| {
+        // `fetch_timeline` already returns newest-first, so this changes
+        // nothing — it is here to say, at the point where the follow-based
+        // branch applies its ordering, that the global branch deliberately does
+        // not go through that comparator.
+        TimelineScope::Global => {
+            all_events.sort_by_key(|event| std::cmp::Reverse(event.created_at))
+        }
+        TimelineScope::Following => all_events.sort_by(|a, b| {
             let a_following = following_set.contains(&a.pubkey) || a.pubkey == keys.public_key();
             let b_following = following_set.contains(&b.pubkey) || b.pubkey == keys.public_key();
             match (a_following, b_following) {
@@ -252,7 +283,7 @@ pub async fn run(limit: usize, with_reactions: bool, global: bool) -> Result<()>
                 (false, true) => std::cmp::Ordering::Greater,
                 _ => b.created_at.cmp(&a.created_at),
             }
-        });
+        }),
     }
 
     all_events.truncate(limit);
@@ -417,8 +448,13 @@ mod tests {
             .collect()
     }
 
-    /// One filter for everyone. 500 strangers on a global timeline cost one
-    /// relay read, not 500 — the regression #8 hit with a 979-entry follow list.
+    /// One filter holds everyone: 500 strangers ride in a single `authors`
+    /// list, so the batch does not have to be split up as it grows.
+    ///
+    /// What this does *not* assert is how many times the filter is sent —
+    /// that `fetch_and_cache_profiles` calls `fetch_events` once is not fixed
+    /// here (see the note on `profile_batch_filter`). This covers the shape the
+    /// one read is built from.
     #[test]
     fn profiles_are_resolved_in_a_single_batched_filter() {
         let pubkeys: Vec<PublicKey> = (0..500).map(|_| Keys::generate().public_key()).collect();
@@ -435,9 +471,9 @@ mod tests {
         assert!(kinds.contains(&Kind::Metadata));
     }
 
-    /// The global feed does not resolve names at all, so it never reaches the
-    /// kind:0 path in the first place: `to_json` renders bare events and the
-    /// text body prints npubs.
+    /// Note authors are never name-resolved, so the kind:0 path is not reached
+    /// for them at all (only reactors under `--with-reactions` are): `to_json`
+    /// renders bare events and the text body prints npubs.
     #[test]
     fn the_json_body_carries_no_profile_name_for_note_authors() {
         let author = Keys::generate();
@@ -456,10 +492,10 @@ mod tests {
             vec![vec!["event", "following", "is_self", "reactions"]],
             "a note is the raw event plus follow/self/reactions — no resolved name"
         );
-        assert!(
-            document["notes"][0]["event"].get("name").is_none()
-                && document["notes"][0]["event"].get("display_name").is_none(),
-            "the embedded event is the event as the relay sent it"
+        assert_eq!(
+            document["notes"][0]["event"],
+            serde_json::to_value(&events[0]).unwrap(),
+            "the embedded event is the event verbatim — nothing is added to it"
         );
     }
 

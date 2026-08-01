@@ -158,7 +158,12 @@ nostaro search "rust nostr" --limit 10
 | --- | --- | --- |
 | Whose notes | the people you follow (plus you), topped up from the relay when your follow set is too quiet to fill `--limit` | **anyone** — the relay's newest kind:1, with no author filter |
 | Order | people you follow first, then newest first | newest first |
-| Cost | one kind:3 read plus one kind:1 read | the same; neither grows with the size of your follow set |
+| Cost | one kind:3 read plus one kind:1 read — **two** kind:1 reads when the top-up runs | one kind:3 read plus one kind:1 read; the top-up never runs |
+| Cost with `--with-reactions` | the above plus one kind:7 read, plus — when there are reactions — one batched kind:0 read for the reactors that are not in the local cache yet | the same |
+
+Neither grows with the size of your follow set: those are all the reads there
+are, whether you follow one person or a thousand. The kind:0 read asks for every
+uncached reactor at once, never one request per person.
 
 Use `--global` to see what is happening on a relay right now. Widening your view
 is not a reason to follow more people — following is for choosing whom to keep

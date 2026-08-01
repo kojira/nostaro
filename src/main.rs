@@ -445,7 +445,16 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
             limit,
             with_reactions,
             global,
-        } => commands::timeline::run(limit, with_reactions, global).await?,
+        } => {
+            // The flag is a bool on the command line; past this point it is a
+            // scope, so it can no longer be confused with `with_reactions`.
+            let scope = if global {
+                commands::timeline::TimelineScope::Global
+            } else {
+                commands::timeline::TimelineScope::Following
+            };
+            commands::timeline::run(limit, with_reactions, scope).await?
+        }
         Commands::Search { query, limit } => commands::search::run(&query, limit).await?,
         Commands::Profile { action } => match action {
             ProfileAction::Show { pubkey } => commands::profile::show(pubkey.as_deref()).await?,

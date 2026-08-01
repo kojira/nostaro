@@ -415,13 +415,17 @@ mod tests {
     /// kind + limit and nothing else. No since/until/search/ids/tag query: the
     /// goal is "the newest N notes, whoever wrote them", and every extra
     /// dimension is a filter option nobody asked for.
+    ///
+    /// Compared as the whole serialized filter rather than field by field:
+    /// `Filter`'s `Serialize` skips what is unset and flattens the tag queries,
+    /// so this is the exact request that goes to the relay. A dimension the SDK
+    /// grows later cannot slip through here the way it would past a
+    /// hand-written list of `is_none()` checks.
     #[test]
     fn global_timeline_filter_adds_no_other_constraints() {
-        let filter = global_timeline_filter(20);
-        assert!(filter.ids.is_none());
-        assert!(filter.search.is_none());
-        assert!(filter.since.is_none());
-        assert!(filter.until.is_none());
-        assert!(filter.generic_tags.is_empty());
+        assert_eq!(
+            serde_json::to_value(global_timeline_filter(20)).unwrap(),
+            serde_json::json!({ "kinds": [1], "limit": 20 }),
+        );
     }
 }
