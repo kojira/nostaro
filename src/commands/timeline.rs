@@ -74,8 +74,8 @@ async fn fetch_reactions(
 }
 
 /// One filter for *all* the missing profiles: kind:0 with every pubkey in a
-/// single `authors` list, i.e. one relay round trip no matter how many people
-/// are involved.
+/// single `authors` list, i.e. a shape a single read can be assembled from, no
+/// matter how many people are involved.
 ///
 /// Pure — it takes pubkeys and builds a filter, it talks to no relay.
 fn profile_batch_filter(pubkeys: Vec<PublicKey>) -> Filter {
@@ -92,14 +92,21 @@ fn profile_batch_filter(pubkeys: Vec<PublicKey>) -> Filter {
 /// That is all it does. It does **not** guarantee the number of round trips:
 /// `profile_batch_filter` is pure, so nothing stops a caller from looping over
 /// it a pubkey at a time. The one-read property lives in
-/// `fetch_and_cache_profiles`, which calls `fetch_events` exactly once, and is
-/// held by review rather than by the type system. Contrast `follow.rs`'s
-/// `describe`, which takes no `&Client` and is not `async`, so it *cannot*
-/// reach a relay at all — that pin is the strong kind, this one is not.
+/// `fetch_and_cache_profiles`, which calls `fetch_events` never more than once
+/// — and not at all when the cache already has everyone — and is held by
+/// review rather than by the type system.
 ///
-/// Keep the batch shape anyway: on a global timeline the authors are strangers,
-/// so *every* one of them misses the cache, and a per-author lookup is the 979
-/// round trips #8/#9 removed.
+/// Contrast `follow.rs`'s `describe`: the difference is *granularity*, not
+/// purity (both functions are pure). `describe` is the whole step from pubkeys
+/// to output, and `Entry` has no name field, so a caller that read kind:0
+/// anyway would have nowhere to put the result — the shape rules the read out
+/// end to end. This function is only the filter-building part of a fetch whose
+/// `async fn` one level up does hold a `&Client`; it can rule nothing out
+/// beyond its own signature.
+///
+/// Keep the batch shape anyway: on a global timeline the reactors are
+/// strangers, so *every* one of them misses the cache, and a per-reactor lookup
+/// is the 979 round trips #8/#9 removed.
 const _: fn(Vec<PublicKey>) -> Filter = profile_batch_filter;
 
 async fn fetch_and_cache_profiles(
