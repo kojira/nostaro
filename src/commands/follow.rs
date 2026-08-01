@@ -8,57 +8,59 @@ use crate::outln;
 use crate::output;
 use crate::utils::resolve_pubkey;
 
-/// One entry of a following/followers listing: the npub, the hex pubkey (what
-/// a kind:3 `p` tag needs) and the display name, `None` when no kind:0 could be
-/// fetched for that user.
+/// One entry of a following/followers listing: the npub and the hex pubkey
+/// (what a kind:3 `p` tag needs).
+///
+/// Deliberately no display name. Listing a follow set is one kind:3 read; a
+/// name per entry would be one kind:0 read per entry on top of it (979 follows
+/// meant 979 round trips), which dwarfs the actual work and is pure waste for
+/// `--out-format json`. Names are `nostaro profile show --pubkey <hex>`'s job.
 struct Entry {
     npub: String,
     hex: String,
-    name: Option<String>,
 }
 
-async fn describe(nostr_client: &Client, pubkeys: &[PublicKey]) -> Result<Vec<Entry>> {
-    let mut entries = Vec::with_capacity(pubkeys.len());
-    for pubkey in pubkeys {
-        let name = match client::fetch_profile(nostr_client, pubkey).await {
-            Ok(Some(metadata)) => Some(metadata.name.unwrap_or_else(|| "Unknown".to_string())),
-            _ => None,
-        };
-        entries.push(Entry {
-            npub: pubkey.to_bech32()?,
-            hex: pubkey.to_hex(),
-            name,
-        });
-    }
-    Ok(entries)
+/// Turn the pubkeys of a kind:3 into printable entries. Pure conversion — it
+/// talks to no relay.
+fn describe(pubkeys: &[PublicKey]) -> Result<Vec<Entry>> {
+    pubkeys
+        .iter()
+        .map(|pubkey| {
+            Ok(Entry {
+                npub: pubkey.to_bech32()?,
+                hex: pubkey.to_hex(),
+            })
+        })
+        .collect()
+}
+
+/// The `--out-format json` document: npub and hex per user, nothing else.
+fn to_json(entries: &[Entry]) -> serde_json::Value {
+    let users: Vec<serde_json::Value> = entries
+        .iter()
+        .map(|entry| {
+            serde_json::json!({
+                "npub": entry.npub,
+                "hex": entry.hex,
+            })
+        })
+        .collect();
+    serde_json::json!({
+        "count": users.len(),
+        "users": users,
+    })
 }
 
 /// Emit the listing: one line per user, or a JSON document when the caller
 /// asked for `--out-format json`.
 fn emit(entries: &[Entry]) -> Result<()> {
     if output::is_json() {
-        let users: Vec<serde_json::Value> = entries
-            .iter()
-            .map(|entry| {
-                serde_json::json!({
-                    "npub": entry.npub,
-                    "hex": entry.hex,
-                    "name": entry.name,
-                })
-            })
-            .collect();
-        return output::write_json(&serde_json::json!({
-            "count": users.len(),
-            "users": users,
-        }));
+        return output::write_json(&to_json(entries));
     }
 
     output::open_body()?;
     for entry in entries {
-        match &entry.name {
-            Some(name) => outln!("  {} ({})", name, entry.npub)?,
-            None => outln!("  {}", entry.npub)?,
-        }
+        outln!("  {}", entry.npub)?;
     }
     Ok(())
 }
@@ -136,7 +138,7 @@ pub async fn following(npub_str: Option<&str>) -> Result<()> {
     }
 
     println!("Following {} user(s):", contacts.len());
-    let entries = describe(&nostr_client, &contacts).await?;
+    let entries = describe(&contacts)?;
     emit(&entries)?;
 
     nostr_client.disconnect().await;
@@ -167,9 +169,109 @@ pub async fn followers(npub_str: Option<&str>) -> Result<()> {
     }
 
     println!("{} follower(s):", follower_list.len());
-    let entries = describe(&nostr_client, &follower_list).await?;
+    let entries = describe(&follower_list)?;
     emit(&entries)?;
 
     nostr_client.disconnect().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_pubkeys() -> Vec<PublicKey> {
+        (0..3).map(|_| Keys::generate().public_key()).collect()
+    }
+
+    /// The point of #8: listing a follow set is *one* kind:3 read. Nothing in
+    /// this module may reach for a kind:0 to decorate the listing with names —
+    /// that turned a 979-follow listing into 979 extra round trips. Names live
+    /// in `nostaro profile show`.
+    #[test]
+    fn listing_never_fetches_profiles() {
+        let source = include_str!("follow.rs");
+        // Skip this module so the test does not match its own explanation.
+        let code = source
+            .split("#[cfg(test)]")
+            .next()
+            .expect("split always yields at least one part");
+        assert!(
+            !code.contains("fetch_profile"),
+            "following/followers must not read kind:0; use `profile show` for names"
+        );
+    }
+
+    #[test]
+    fn describe_yields_npub_and_hex_only() {
+        let pubkeys = sample_pubkeys();
+        let entries = describe(&pubkeys).unwrap();
+
+        assert_eq!(entries.len(), pubkeys.len());
+        for (entry, pubkey) in entries.iter().zip(&pubkeys) {
+            assert_eq!(entry.npub, pubkey.to_bech32().unwrap());
+            assert_eq!(entry.hex, pubkey.to_hex());
+        }
+    }
+
+    #[test]
+    fn json_users_carry_no_name_field() {
+        let pubkeys = sample_pubkeys();
+        let document = to_json(&describe(&pubkeys).unwrap());
+
+        assert_eq!(document["count"], pubkeys.len());
+        let users = document["users"].as_array().unwrap();
+        assert_eq!(users.len(), pubkeys.len());
+        for (user, pubkey) in users.iter().zip(&pubkeys) {
+            let object = user.as_object().unwrap();
+            assert_eq!(
+                object.keys().collect::<Vec<_>>(),
+                vec!["hex", "npub"],
+                "the JSON body is npub + hex, nothing else"
+            );
+            assert_eq!(object["npub"], pubkey.to_bech32().unwrap());
+            assert_eq!(object["hex"], pubkey.to_hex());
+        }
+    }
+
+    /// An empty listing is still a listing: `count: 0` with an empty array,
+    /// never a missing `users` key.
+    #[test]
+    fn json_of_an_empty_listing_is_still_a_document() {
+        let document = to_json(&[]);
+        assert_eq!(document["count"], 0);
+        assert_eq!(document["users"].as_array().unwrap().len(), 0);
+    }
+
+    /// The text body is bare npubs — one per line, no name in parentheses.
+    ///
+    /// The output sink is process-global, so this is the only test in the lib
+    /// test binary that touches it.
+    #[test]
+    fn text_body_is_bare_npubs() {
+        use crate::output::OutFormat;
+        use std::path::PathBuf;
+
+        let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("target")
+            .join("follow-test-tmp");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("following.txt");
+
+        let pubkeys = sample_pubkeys();
+        let entries = describe(&pubkeys).unwrap();
+
+        output::configure(Some(path.clone()), OutFormat::Text);
+        emit(&entries).unwrap();
+        output::finish().unwrap();
+        output::configure(None, OutFormat::Text);
+
+        let body = std::fs::read_to_string(&path).unwrap();
+        let expected: String = pubkeys
+            .iter()
+            .map(|pubkey| format!("  {}\n", pubkey.to_bech32().unwrap()))
+            .collect();
+        assert_eq!(body, expected);
+        assert!(!body.contains('('), "no name decoration: {}", body);
+    }
 }

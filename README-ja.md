@@ -64,7 +64,7 @@ blossom_server = "https://blossom.primal.net"
 
 ### `--out` — 大量出力を stdout から追い出す
 
-979 人フォローしているアカウントの `nostaro following` は約 77,000 文字を出力します。
+979 人フォローしているアカウントの `nostaro following` は約 65,000 文字を出力します。
 出力をエージェント（あるいはコンテキスト長を持つ何か）が読む場合、それだけで予算を
 使い切ってしまいます。`--out` は**本体**をファイルへ送り、stdout には要約だけを残します。
 
@@ -98,7 +98,7 @@ JSON の形:
 
 | コマンド | ドキュメント |
 | --- | --- |
-| `following`, `followers` | `{"count": N, "users": [{"npub", "hex", "name"}]}` |
+| `following`, `followers` | `{"count": N, "users": [{"npub", "hex"}]}` |
 | `search` | `{"count": N, "events": [<nostr event>]}` |
 | `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
 
@@ -160,6 +160,15 @@ nostaro following
 # フォロワーリスト
 nostaro followers
 nostaro followers npub1...
+```
+
+`following` / `followers` が返すのは **npub だけ**で、表示名は出しません。
+一覧そのものは kind:3 を 1 回読めば終わりますが、名前を付けるには 1 件ごとに
+kind:0 を読む必要があり（979 フォローなら 979 往復）、しかもその出力はたいてい
+スクリプトに流されます。名前が必要なときは明示的に引いてください。
+
+```bash
+nostaro profile show --pubkey <npub または hex>
 ```
 
 ### DM (ダイレクトメッセージ)

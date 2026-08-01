@@ -64,7 +64,7 @@ Accepted by every command, before or after the subcommand.
 
 ### `--out` — keep bulk output out of stdout
 
-`nostaro following` on an account with 979 follows prints ~77k characters. When
+`nostaro following` on an account with 979 follows prints ~65k characters. When
 the output is being read by an agent (or anything else with a context window),
 that is the whole budget gone. `--out` sends the **body** to a file and leaves
 only the summary on stdout:
@@ -103,7 +103,7 @@ JSON shapes:
 
 | Command | Document |
 | --- | --- |
-| `following`, `followers` | `{"count": N, "users": [{"npub", "hex", "name"}]}` |
+| `following`, `followers` | `{"count": N, "users": [{"npub", "hex"}]}` |
 | `search` | `{"count": N, "events": [<nostr event>]}` |
 | `timeline` | `{"count": N, "notes": [{"event", "following", "is_self", "reactions"}]}` |
 
@@ -168,6 +168,15 @@ nostaro following
 # List followers
 nostaro followers
 nostaro followers npub1...
+```
+
+`following` / `followers` list **npubs only** — no display names. The list
+itself is a single kind:3 read; attaching a name would mean one extra kind:0
+read *per entry* (979 follows = 979 round trips) to decorate output that is
+usually piped into a script anyway. When you want a name, ask for it:
+
+```bash
+nostaro profile show --pubkey <npub or hex>
 ```
 
 ### DM (Direct Messages)
