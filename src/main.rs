@@ -201,6 +201,12 @@ enum Commands {
         /// Output matched events as JSON Lines on stdout instead of sending to Discord
         #[arg(long)]
         json: bool,
+        /// Only pass events authored by someone on your own follow list (kind:3). The
+        /// follow set is read at start-up and tracked for replacements; the p-tag mention
+        /// subscription is not opened in this mode (anyone can p-tag you), so a non-followee
+        /// can never reach you. Combines with --author (union) and --match.
+        #[arg(long)]
+        only_follows: bool,
     },
 
     /// Post a custom kind Nostr event
@@ -549,7 +555,7 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
             match_mode,
             relays,
             json,
-            ..
+            only_follows,
         } => {
             commands::watch::run(
                 webhook.as_deref(),
@@ -562,6 +568,7 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
                 &relays,
                 json,
                 match_mode,
+                only_follows,
             )
             .await?
         }
