@@ -140,6 +140,10 @@ struct WatchFilter {
     /// `--only-follows`: pin the watch to the author's own follow list (kind:3). Acts as a
     /// hard gate — a non-followee never passes, whatever else it matches.
     only_follows: bool,
+    /// `created_at` of the kind:3 list currently applied (`--only-follows` only). A later
+    /// replacement older than this is a stale copy arriving late from another relay and is
+    /// ignored, so the follow set never rolls backward.
+    follows_updated_at: Option<Timestamp>,
     /// Whether the conditions above are OR'd (`any`) or AND'd (`all`).
     match_mode: MatchMode,
 }
@@ -179,6 +183,7 @@ fn build_watch_filter(
         authors: authors.to_vec(),
         static_authors: authors.to_vec(),
         only_follows,
+        follows_updated_at: None,
         match_mode,
     }
 }
@@ -227,6 +232,13 @@ impl WatchFilter {
             }
         }
         self.authors = merged;
+    }
+
+    /// Adopt a kind:3 contact list: take its follows and remember its `created_at` so a
+    /// later, older replacement can be recognised as stale and ignored.
+    fn apply_follow_list(&mut self, event: &Event) {
+        self.set_follows(&contacts_from_event(event));
+        self.follows_updated_at = Some(event.created_at);
     }
 
     /// `--author` as a plain membership test. Used on its own for NIP-28 channel
@@ -480,17 +492,10 @@ pub async fn run(
     // output modes go through this, then handle the incoming kind:3 in their own loop via
     // `maybe_apply_follow_update`.
     if only_follows {
-        let follows = client::fetch_contacts(&nostr_client, &own_pubkey).await?;
-        if follows.is_empty() {
-            bail!(
-                "--only-follows: no kind:3 follow list found for your pubkey ({}). \
-                 Publish a follow list first; refusing to fall back to passing everything.",
-                own_pubkey
-                    .to_bech32()
-                    .unwrap_or_else(|_| own_pubkey.to_hex())
-            );
-        }
-        watch_filter.set_follows(&follows);
+        // Subscribe to replacements *before* the initial fetch: doing it after would leave
+        // a gap where a kind:3 published between the fetch and the subscription is missed
+        // until the next update. A stale copy the subscription then re-delivers is rejected
+        // by the `created_at` guard in `maybe_apply_follow_update`.
         nostr_client
             .subscribe_with_id(
                 follows_update_subscription_id(),
@@ -501,6 +506,19 @@ pub async fn run(
                 None,
             )
             .await?;
+
+        let list = client::fetch_contact_list(&nostr_client, &own_pubkey).await?;
+        let list = match list {
+            Some(event) if !contacts_from_event(&event).is_empty() => event,
+            _ => bail!(
+                "--only-follows: no kind:3 follow list found for your pubkey ({}). \
+                 Publish a follow list first; refusing to fall back to passing everything.",
+                own_pubkey
+                    .to_bech32()
+                    .unwrap_or_else(|_| own_pubkey.to_hex())
+            ),
+        };
+        watch_filter.apply_follow_list(&list);
         eprintln!(
             "--only-follows: pinned to {} followed authors (kind:3 updates tracked)",
             watch_filter.authors.len()
@@ -809,6 +827,16 @@ fn contacts_from_event(event: &Event) -> Vec<PublicKey> {
         .collect()
 }
 
+/// Whether an incoming kind:3 should replace the applied one: only when none is applied yet
+/// or the incoming is not older. Rejects a stale list that arrives late from another relay,
+/// which would otherwise roll the follow set backward.
+fn follow_update_is_fresh(applied: Option<Timestamp>, incoming: Timestamp) -> bool {
+    match applied {
+        Some(applied) => incoming >= applied,
+        None => true,
+    }
+}
+
 /// Open the watch subscriptions and return their ids, so `--only-follows` can replace them
 /// when the follow list changes. Shared by both output modes so neither can subscribe
 /// differently from the other.
@@ -844,8 +872,23 @@ async fn maybe_apply_follow_update(
         return Ok(false);
     }
 
+    // A contact list older than the one already applied is a stale copy arriving late from
+    // another relay; ignore it so the follow set never rolls backward. It is still our own
+    // kind:3, so report it handled and drop it rather than processing it as an event.
+    if !follow_update_is_fresh(filter.follows_updated_at, event.created_at) {
+        eprintln!(
+            "--only-follows: ignoring a stale kind:3 (created_at {} older than applied {})",
+            event.created_at.as_u64(),
+            filter
+                .follows_updated_at
+                .map(|t| t.as_u64())
+                .unwrap_or_default()
+        );
+        return Ok(true);
+    }
+
     let follows = contacts_from_event(event);
-    filter.set_follows(&follows);
+    filter.apply_follow_list(event);
 
     for id in active_ids.drain(..) {
         client.unsubscribe(&id).await;
@@ -1898,5 +1941,63 @@ mod tests {
             .sign_with_keys(&Keys::generate())
             .expect("sign");
         assert_eq!(contacts_from_event(&list), vec![a, b]);
+    }
+
+    /// A kind:3 signed by `keys`, dated `created_at`, following `follows`.
+    fn contact_list_at(keys: &Keys, created_at: u64, follows: &[PublicKey]) -> Event {
+        EventBuilder::new(Kind::ContactList, "")
+            .tags(follows.iter().map(|pk| Tag::public_key(*pk)))
+            .custom_created_at(Timestamp::from(created_at))
+            .sign_with_keys(keys)
+            .expect("sign")
+    }
+
+    #[test]
+    fn follow_update_freshness_rejects_only_older_lists() {
+        let t = Timestamp::from(1000);
+        // Nothing applied yet: anything is fresh.
+        assert!(follow_update_is_fresh(None, t));
+        // Same timestamp is accepted (idempotent), newer is accepted, older is rejected.
+        assert!(follow_update_is_fresh(Some(t), t));
+        assert!(follow_update_is_fresh(Some(t), Timestamp::from(1001)));
+        assert!(!follow_update_is_fresh(Some(t), Timestamp::from(999)));
+    }
+
+    #[test]
+    fn apply_follow_list_records_the_created_at() {
+        let me = Keys::generate();
+        let friend = Keys::generate().public_key();
+        let mut filter = Args::new(me.public_key())
+            .kinds(&[1])
+            .only_follows()
+            .build();
+
+        let list = contact_list_at(&me, 2000, &[friend]);
+        filter.apply_follow_list(&list);
+        assert_eq!(filter.authors, vec![friend]);
+        assert_eq!(filter.follows_updated_at, Some(Timestamp::from(2000)));
+    }
+
+    #[test]
+    fn a_stale_replacement_would_not_be_applied() {
+        // Guards #2's concern: with several relays a newer list can be followed by an older
+        // one; the freshness check keeps the newer follow set. (The wiring that consults it
+        // lives in the async `maybe_apply_follow_update`; here we pin the decision itself.)
+        let me = Keys::generate();
+        let old_friend = Keys::generate().public_key();
+        let new_friend = Keys::generate().public_key();
+        let mut filter = Args::new(me.public_key())
+            .kinds(&[1])
+            .only_follows()
+            .build();
+
+        filter.apply_follow_list(&contact_list_at(&me, 2000, &[new_friend]));
+        let stale = contact_list_at(&me, 1000, &[old_friend]);
+        assert!(!follow_update_is_fresh(
+            filter.follows_updated_at,
+            stale.created_at
+        ));
+        // The follow set is unchanged because the stale list is never applied.
+        assert_eq!(filter.authors, vec![new_friend]);
     }
 }
