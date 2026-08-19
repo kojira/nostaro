@@ -182,6 +182,20 @@ pub async fn fetch_contacts(client: &Client, pubkey: &PublicKey) -> Result<Vec<P
     }
 }
 
+/// The author's latest kind:3 contact-list event, if any. `fetch_contacts` returns only the
+/// pubkeys; callers that also need the event's `created_at` — e.g. to reject a stale
+/// replacement arriving late from another relay — use this. Picks the newest by
+/// `created_at` because each relay may return its own copy.
+pub async fn fetch_contact_list(client: &Client, pubkey: &PublicKey) -> Result<Option<Event>> {
+    let filter = Filter::new()
+        .kind(Kind::ContactList)
+        .author(*pubkey)
+        .limit(1);
+
+    let events = client.fetch_events(filter, Duration::from_secs(10)).await?;
+    Ok(events.into_iter().max_by_key(|e| e.created_at))
+}
+
 pub async fn fetch_followers(client: &Client, pubkey: &PublicKey) -> Result<Vec<PublicKey>> {
     let filter = Filter::new().kind(Kind::ContactList).pubkey(*pubkey);
 
