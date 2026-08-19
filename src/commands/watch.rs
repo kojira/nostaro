@@ -124,10 +124,22 @@ struct WatchFilter {
     /// value; with the implicit default we only match keywords against kind:1, because
     /// the content of a kind:7 reaction is an emoji, not prose.
     keyword_kinds: Vec<Kind>,
-    /// Whether the `p`-tag condition is in play (`--mention-only`, the default).
+    /// Whether the `p`-tag condition is in play (`--mention-only`, the default). Forced
+    /// off under `--only-follows`: the p-tag subscription is a firehose anyone can inject
+    /// into, so it is never opened when we are pinning to the follow set.
     mention_only: bool,
     keywords: Vec<String>,
+    /// The effective author set the relay filters and the local check use. When
+    /// `--only-follows` is on this is `static_authors` unioned with the live follow list
+    /// and is refreshed by [`WatchFilter::set_follows`] as the kind:3 list changes.
     authors: Vec<PublicKey>,
+    /// The authors given explicitly on the command line (`--author`). Kept apart from
+    /// `authors` so the follow list can be merged in (and re-merged on update) without
+    /// losing the static ones.
+    static_authors: Vec<PublicKey>,
+    /// `--only-follows`: pin the watch to the author's own follow list (kind:3). Acts as a
+    /// hard gate — a non-followee never passes, whatever else it matches.
+    only_follows: bool,
     /// Whether the conditions above are OR'd (`any`) or AND'd (`all`).
     match_mode: MatchMode,
 }
@@ -147,6 +159,7 @@ fn build_watch_filter(
     keywords: &[String],
     authors: &[PublicKey],
     match_mode: MatchMode,
+    only_follows: bool,
 ) -> WatchFilter {
     let (kinds, keyword_kinds) = if extra_kinds.is_empty() {
         (vec![Kind::TextNote, Kind::Reaction], vec![Kind::TextNote])
@@ -159,9 +172,13 @@ fn build_watch_filter(
         own_pubkey,
         kinds,
         keyword_kinds,
-        mention_only: mention_only && watching_mentions,
+        // The follow set replaces the mention subscription under --only-follows: opening a
+        // p-tag firehose would defeat the point (anyone can p-tag you).
+        mention_only: mention_only && watching_mentions && !only_follows,
         keywords: keywords.to_vec(),
         authors: authors.to_vec(),
+        static_authors: authors.to_vec(),
+        only_follows,
         match_mode,
     }
 }
@@ -199,10 +216,27 @@ impl WatchFilter {
         self.keyword_kinds.contains(&event.kind)
     }
 
+    /// Replace the live follow set (from a kind:3 list), recomputing the effective author
+    /// set as `static_authors ∪ follows`. Only meaningful under `--only-follows`; the
+    /// dedup keeps `--author` entries from being listed twice.
+    fn set_follows(&mut self, follows: &[PublicKey]) {
+        let mut merged = self.static_authors.clone();
+        for pk in follows {
+            if !merged.contains(pk) {
+                merged.push(*pk);
+            }
+        }
+        self.authors = merged;
+    }
+
     /// `--author` as a plain membership test. Used on its own for NIP-28 channel
     /// messages, which are selected by the channel subscription but must still honour
-    /// `--author`.
+    /// `--author`. Under `--only-follows` an empty author set means "allow no one" (the
+    /// follow list is empty), never "allow everyone".
     fn author_allowed(&self, event: &Event) -> bool {
+        if self.only_follows {
+            return self.authors.contains(&event.pubkey);
+        }
         self.authors.is_empty() || self.authors.contains(&event.pubkey)
     }
 
@@ -223,6 +257,27 @@ impl WatchFilter {
     /// With no condition at all we subscribe to the bare kinds, which is what
     /// `--no-mention-only` without any other flag explicitly asks for.
     fn subscriptions(&self, since: Timestamp) -> Vec<Filter> {
+        // --only-follows narrows *every* subscription to the follow set at the relay (the
+        // "line" the issue wants events dropped before): no p-tag firehose, no bare-kind
+        // firehose. With an empty follow set nothing is subscribed at all, so nothing
+        // streams — the safe direction, never a fall-back to a firehose. Keywords stay a
+        // local check (relays can't filter content); in --match all they still narrow the
+        // subscribed kinds.
+        if self.only_follows {
+            if self.authors.is_empty() {
+                return Vec::new();
+            }
+            let kinds = if self.match_mode == MatchMode::All && !self.keywords.is_empty() {
+                self.keyword_kinds.clone()
+            } else {
+                self.kinds.clone()
+            };
+            return vec![Filter::new()
+                .kinds(kinds)
+                .authors(self.authors.clone())
+                .since(since)];
+        }
+
         if self.match_mode == MatchMode::All {
             let kinds = if self.keywords.is_empty() {
                 self.kinds.clone()
@@ -274,6 +329,12 @@ impl WatchFilter {
     /// With no condition configured everything is kept, in both match modes.
     fn match_event(&self, event: &Event) -> Option<MatchReason> {
         if self.is_own_echo(event) {
+            return None;
+        }
+        // --only-follows is a hard gate mirroring the authors filter on every
+        // subscription: an event from a non-followee never passes, whatever else it
+        // matches. An empty follow set therefore drops everything (not a firehose).
+        if self.only_follows && !self.authors.contains(&event.pubkey) {
             return None;
         }
         if !self.is_narrowed() {
@@ -362,12 +423,19 @@ pub async fn run(
     relays: &[String],
     json_output: bool,
     match_mode: MatchMode,
+    only_follows: bool,
 ) -> Result<()> {
     if !json_output && webhook_url.is_none() {
         bail!("--webhook is required unless --json is specified");
     }
     if json_output && channel_id.is_some() {
         bail!("--channel is not supported together with --json");
+    }
+    if only_follows && npub_str.is_some() {
+        // --only-follows pins to *your own* follow list; watching someone else's mentions
+        // via --npub would need their kind:3, which is a different feature. Fail loudly
+        // rather than quietly ignoring one of the two flags.
+        bail!("--only-follows cannot be combined with --npub: it always uses your own follow list");
     }
 
     let config = NostaroConfig::load()?;
@@ -395,7 +463,7 @@ pub async fn run(
     // same inputs.
     let watching_mentions = watching_mentions(channel_id, npub_str);
 
-    let watch_filter = build_watch_filter(
+    let mut watch_filter = build_watch_filter(
         own_pubkey,
         target_pubkey,
         extra_kinds,
@@ -404,16 +472,50 @@ pub async fn run(
         keywords,
         &author_pubkeys,
         match_mode,
+        only_follows,
     );
 
+    // --only-follows: seed the author set from the live kind:3 follow list, fail loudly if
+    // there is none, and subscribe to future replacements so the set tracks updates. Both
+    // output modes go through this, then handle the incoming kind:3 in their own loop via
+    // `maybe_apply_follow_update`.
+    if only_follows {
+        let follows = client::fetch_contacts(&nostr_client, &own_pubkey).await?;
+        if follows.is_empty() {
+            bail!(
+                "--only-follows: no kind:3 follow list found for your pubkey ({}). \
+                 Publish a follow list first; refusing to fall back to passing everything.",
+                own_pubkey
+                    .to_bech32()
+                    .unwrap_or_else(|_| own_pubkey.to_hex())
+            );
+        }
+        watch_filter.set_follows(&follows);
+        nostr_client
+            .subscribe_with_id(
+                follows_update_subscription_id(),
+                Filter::new()
+                    .kind(Kind::ContactList)
+                    .author(own_pubkey)
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        eprintln!(
+            "--only-follows: pinned to {} followed authors (kind:3 updates tracked)",
+            watch_filter.authors.len()
+        );
+    }
+
     if json_output {
-        return watch_json(&nostr_client, &watch_filter).await;
+        return watch_json(&nostr_client, &mut watch_filter, own_pubkey).await;
     }
     let webhook_url = webhook_url.expect("checked above");
 
     // Channel watch mode
     let watching_channel = channel_id.map(|s| s.to_string());
-    let general_watch = opens_general_subscriptions(watching_mentions, keywords);
+    let general_watch =
+        opens_general_subscriptions(watching_mentions, keywords) || watch_filter.only_follows;
 
     println!("Webhook: {}", webhook_url);
 
@@ -432,11 +534,12 @@ pub async fn run(
         nostr_client.subscribe(filter, None).await?;
     }
 
+    // Follow-narrowed subscriptions are tracked by id so `--only-follows` can replace them
+    // when the kind:3 list changes; empty for the ordinary (static) subscriptions.
+    let mut active_ids: Vec<SubscriptionId> = Vec::new();
     if general_watch {
         describe_filter(&watch_filter)?;
-        for filter in watch_filter.subscriptions(Timestamp::now()) {
-            nostr_client.subscribe(filter, None).await?;
-        }
+        active_ids = subscribe_watch(&nostr_client, &watch_filter, Timestamp::now()).await?;
     }
     println!("Press Ctrl+C to stop.\n");
 
@@ -448,6 +551,20 @@ pub async fn run(
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
             if !dedup.accept(&event) {
+                continue;
+            }
+
+            // A replacement of our own follow list re-narrows the subscriptions; the event
+            // itself is not a watched notification, so stop processing it here.
+            if maybe_apply_follow_update(
+                &nostr_client,
+                &event,
+                &own_pubkey,
+                &mut watch_filter,
+                &mut active_ids,
+            )
+            .await?
+            {
                 continue;
             }
 
@@ -670,6 +787,86 @@ pub async fn run(
     Ok(())
 }
 
+/// Fixed id for the kind:3 replacement subscription, so `--only-follows` keeps exactly one
+/// of them open across the run.
+fn follows_update_subscription_id() -> SubscriptionId {
+    SubscriptionId::new("nostaro-follows-update")
+}
+
+/// The pubkeys `p`-tagged by a kind:3 contact list. Mirrors [`client::fetch_contacts`]'s
+/// extraction so the initial fetch and a live update agree on what "follows" means.
+fn contacts_from_event(event: &Event) -> Vec<PublicKey> {
+    event
+        .tags
+        .iter()
+        .filter_map(|tag| {
+            if let Some(TagStandard::PublicKey { public_key, .. }) = tag.as_standardized() {
+                Some(*public_key)
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+/// Open the watch subscriptions and return their ids, so `--only-follows` can replace them
+/// when the follow list changes. Shared by both output modes so neither can subscribe
+/// differently from the other.
+async fn subscribe_watch(
+    client: &Client,
+    filter: &WatchFilter,
+    since: Timestamp,
+) -> Result<Vec<SubscriptionId>> {
+    let mut ids = Vec::new();
+    for f in filter.subscriptions(since) {
+        let output = client.subscribe(f, None).await?;
+        ids.push(output.val);
+    }
+    Ok(ids)
+}
+
+/// If `event` is a replacement of our own follow list under `--only-follows`, refresh the
+/// allowed-author set and re-issue the follow-narrowed subscriptions, then report `true` so
+/// the caller drops the event (it is not a watched notification). Everything else returns
+/// `false` and is handled normally.
+///
+/// A cleared list leaves an empty author set: [`WatchFilter::subscriptions`] then opens
+/// nothing and [`WatchFilter::match_event`] drops everything — the safe direction. We warn
+/// loudly rather than silently reverting to a firehose, and never crash the running watch.
+async fn maybe_apply_follow_update(
+    client: &Client,
+    event: &Event,
+    own_pubkey: &PublicKey,
+    filter: &mut WatchFilter,
+    active_ids: &mut Vec<SubscriptionId>,
+) -> Result<bool> {
+    if !filter.only_follows || event.kind != Kind::ContactList || event.pubkey != *own_pubkey {
+        return Ok(false);
+    }
+
+    let follows = contacts_from_event(event);
+    filter.set_follows(&follows);
+
+    for id in active_ids.drain(..) {
+        client.unsubscribe(&id).await;
+    }
+    let new_ids = subscribe_watch(client, filter, Timestamp::now()).await?;
+    active_ids.extend(new_ids);
+
+    if follows.is_empty() {
+        eprintln!(
+            "WARNING --only-follows: your kind:3 follow list is now empty; nothing will pass \
+             until you follow someone again"
+        );
+    } else {
+        eprintln!(
+            "--only-follows: follow list updated; now pinned to {} authors",
+            filter.authors.len()
+        );
+    }
+    Ok(true)
+}
+
 /// Matched event schema emitted on stdout by `watch --json`, one line per event (JSONL).
 #[derive(Serialize)]
 struct JsonEvent {
@@ -709,7 +906,12 @@ fn filter_description(filter: &WatchFilter) -> Result<Vec<String>> {
             filter.target_pubkey.to_bech32()?
         ));
     }
-    if !filter.authors.is_empty() {
+    if filter.only_follows {
+        lines.push(format!(
+            "Only-follows: {} followed authors (dynamic, from kind:3)",
+            filter.authors.len()
+        ));
+    } else if !filter.authors.is_empty() {
         lines.push(format!("Authors: {}", filter.authors.len()));
     }
     if !filter.keywords.is_empty() {
@@ -734,16 +936,18 @@ fn filter_description(filter: &WatchFilter) -> Result<Vec<String>> {
 /// [`WatchFilter`] (identical to the webhook path) and prints one JSON object per matched
 /// event to stdout (JSONL). All progress/diagnostic output goes to stderr so stdout stays
 /// pure JSONL.
-async fn watch_json(nostr_client: &Client, watch_filter: &WatchFilter) -> Result<()> {
+async fn watch_json(
+    nostr_client: &Client,
+    watch_filter: &mut WatchFilter,
+    own_pubkey: PublicKey,
+) -> Result<()> {
     eprintln!("Watching (JSON mode)");
     for line in filter_description(watch_filter)? {
         eprintln!("{}", line);
     }
     eprintln!("Press Ctrl+C to stop.\n");
 
-    for filter in watch_filter.subscriptions(Timestamp::now()) {
-        nostr_client.subscribe(filter, None).await?;
-    }
+    let mut active_ids = subscribe_watch(nostr_client, watch_filter, Timestamp::now()).await?;
 
     let mut dedup = EventDeduplicator::new();
     let mut author_name_cache: HashMap<PublicKey, Option<String>> = HashMap::new();
@@ -752,6 +956,18 @@ async fn watch_json(nostr_client: &Client, watch_filter: &WatchFilter) -> Result
     while let Ok(notification) = notifications.recv().await {
         if let RelayPoolNotification::Event { event, .. } = notification {
             if !dedup.accept(&event) {
+                continue;
+            }
+
+            if maybe_apply_follow_update(
+                nostr_client,
+                &event,
+                &own_pubkey,
+                watch_filter,
+                &mut active_ids,
+            )
+            .await?
+            {
                 continue;
             }
 
@@ -889,6 +1105,7 @@ mod tests {
         keywords: Vec<String>,
         authors: Vec<PublicKey>,
         match_mode: MatchMode,
+        only_follows: bool,
     }
 
     impl Args {
@@ -902,7 +1119,12 @@ mod tests {
                 keywords: vec![],
                 authors: vec![],
                 match_mode: MatchMode::Any,
+                only_follows: false,
             }
+        }
+        fn only_follows(mut self) -> Self {
+            self.only_follows = true;
+            self
         }
         fn kinds(mut self, kinds: &[u16]) -> Self {
             self.kinds = kinds.to_vec();
@@ -942,6 +1164,7 @@ mod tests {
                 &self.keywords,
                 &self.authors,
                 self.match_mode,
+                self.only_follows,
             )
         }
     }
@@ -1523,5 +1746,157 @@ mod tests {
             text_note_label(Some(&MatchReason::Mention), true),
             ("📩", "リプライ")
         );
+    }
+
+    // --- --only-follows ----------------------------------------------------------------
+
+    #[test]
+    fn only_follows_drops_the_mention_condition() {
+        // The p-tag firehose is exactly what --only-follows must not open: anyone can
+        // p-tag you. The mention condition is therefore forced off even though it defaults
+        // on.
+        let me = Keys::generate().public_key();
+        let filter = Args::new(me).only_follows().build();
+        assert!(!filter.mention_only);
+    }
+
+    #[test]
+    fn only_follows_gates_hard_on_the_follow_set() {
+        // Only followees pass; a non-followee's reply/reaction never does, whatever it
+        // matches. This is the whole point of the flag.
+        let me = Keys::generate().public_key();
+        let friend = Keys::generate();
+        let stranger = Keys::generate();
+
+        let mut filter = Args::new(me).kinds(&[1, 7]).only_follows().build();
+        filter.set_follows(&[friend.public_key()]);
+
+        assert_eq!(
+            filter.match_event(&note_from(&friend, "just a post", vec![])),
+            Some(MatchReason::Author)
+        );
+        // A friend's reply addressed to me also comes through the authors filter.
+        assert_eq!(
+            filter.match_event(&note_from(&friend, "hi", vec![Tag::public_key(me)])),
+            Some(MatchReason::Author)
+        );
+        // A stranger p-tagging me is dropped, even though the default mode would keep it.
+        assert!(filter
+            .match_event(&note_from(&stranger, "hey you", vec![Tag::public_key(me)]))
+            .is_none());
+    }
+
+    #[test]
+    fn only_follows_subscription_is_author_narrowed_and_opens_no_firehose() {
+        let me = Keys::generate().public_key();
+        let friend = Keys::generate().public_key();
+        let mut filter = Args::new(me).kinds(&[1, 7]).only_follows().build();
+        filter.set_follows(&[friend]);
+
+        let subs = filter.subscriptions(Timestamp::now());
+        assert_eq!(subs.len(), 1, "a single follow-narrowed subscription");
+        assert!(!has_p_tag(&subs[0]), "no p-tag firehose is opened");
+        assert_eq!(subs[0].authors, Some([friend].into_iter().collect()));
+        assert_eq!(kinds_of(&subs[0]), vec![1, 7]);
+    }
+
+    #[test]
+    fn only_follows_merges_static_authors_with_the_follow_list() {
+        let me = Keys::generate().public_key();
+        let friend = Keys::generate();
+        let extra = Keys::generate();
+        // --author <extra> alongside --only-follows: the two sources are unioned.
+        let mut filter = Args::new(me)
+            .kinds(&[1])
+            .authors(&[extra.public_key()])
+            .only_follows()
+            .build();
+        filter.set_follows(&[friend.public_key()]);
+
+        assert_eq!(
+            filter.match_event(&note_from(&friend, "from a followee", vec![])),
+            Some(MatchReason::Author)
+        );
+        assert_eq!(
+            filter.match_event(&note_from(&extra, "from a static author", vec![])),
+            Some(MatchReason::Author)
+        );
+        let subs = filter.subscriptions(Timestamp::now());
+        assert_eq!(
+            subs[0].authors,
+            Some(
+                [friend.public_key(), extra.public_key()]
+                    .into_iter()
+                    .collect()
+            )
+        );
+    }
+
+    #[test]
+    fn only_follows_set_follows_dedupes_against_static_authors() {
+        let me = Keys::generate().public_key();
+        let shared = Keys::generate().public_key();
+        let mut filter = Args::new(me)
+            .kinds(&[1])
+            .authors(&[shared])
+            .only_follows()
+            .build();
+        // The same pubkey appears in both --author and the follow list.
+        filter.set_follows(&[shared]);
+        assert_eq!(filter.authors, vec![shared], "no duplicate author entries");
+    }
+
+    #[test]
+    fn only_follows_empty_list_drops_everything_and_opens_nothing() {
+        // A cleared follow list must never degrade into a firehose: no subscription is
+        // opened and every event is dropped locally.
+        let me = Keys::generate().public_key();
+        let stranger = Keys::generate();
+        let mut filter = Args::new(me).kinds(&[1]).only_follows().build();
+        filter.set_follows(&[]);
+
+        assert!(filter.subscriptions(Timestamp::now()).is_empty());
+        assert!(filter
+            .match_event(&note_from(&stranger, "anything", vec![]))
+            .is_none());
+    }
+
+    #[test]
+    fn only_follows_with_match_all_keeps_keyword_narrowing() {
+        // --only-follows --keyword foo --match all: a followee's post that also contains
+        // the keyword. The relay filter narrows to the follow set and the keyword kinds;
+        // the keyword itself is checked locally.
+        let me = Keys::generate().public_key();
+        let friend = Keys::generate();
+        let mut filter = Args::new(me)
+            .kinds(&[1])
+            .keywords(&["foo"])
+            .only_follows()
+            .all()
+            .build();
+        filter.set_follows(&[friend.public_key()]);
+
+        assert_eq!(
+            filter.match_event(&note_from(&friend, "about foo", vec![])),
+            Some(MatchReason::Keyword("foo".to_string()))
+        );
+        // Right author, wrong content.
+        assert!(filter
+            .match_event(&note_from(&friend, "about bar", vec![]))
+            .is_none());
+        let subs = filter.subscriptions(Timestamp::now());
+        assert_eq!(subs.len(), 1);
+        assert!(subs[0].authors.is_some());
+    }
+
+    #[test]
+    fn contacts_from_event_reads_the_p_tags() {
+        let a = Keys::generate().public_key();
+        let b = Keys::generate().public_key();
+        let list = EventBuilder::new(Kind::ContactList, "")
+            .tags(vec![Tag::public_key(a), Tag::public_key(b)])
+            .sign_with_keys(&Keys::generate())
+            .expect("sign");
+        assert_eq!(contacts_from_event(&list), vec![a, b]);
     }
 }
