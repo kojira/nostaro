@@ -308,6 +308,7 @@ nostaro watch --json --keyword nostr
 - リアクション通知には元の投稿が引用として含まれる
 - kind:0 プロフィールメタデータ（アイコン、表示名）を Webhook アバターに使用
 - 継続的に実行 — バックグラウンド監視に最適
+- リレーの `CLOSED` で REQ を張り直す（`since=now`）。1本が15分無音（`--silence-timeout`）ならそのリレーだけ disconnect/connect + 再購読。診断は stderr。JSONL スキーマは変えない。
 
 > **旧バージョンからの移行 — 挙動が6点変わりました:**
 >

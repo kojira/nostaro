@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use nostr_sdk::prelude::*;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet, VecDeque};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::client;
 use crate::config::NostaroConfig;
@@ -11,6 +11,11 @@ use crate::utils::resolve_pubkey;
 
 /// How stale an event can be (relative to now) before watch drops it as a replay.
 const MAX_EVENT_AGE_SECS: u64 = 300;
+/// Per-relay EVENT silence before disconnect/connect + re-REQ. `--silence-timeout` overrides.
+pub const DEFAULT_SILENCE_TIMEOUT_MINS: u64 = 15;
+#[cfg(test)]
+const DEFAULT_SILENCE_TIMEOUT: Duration =
+    Duration::from_secs(DEFAULT_SILENCE_TIMEOUT_MINS * 60);
 /// Cap on remembered event IDs before the oldest are evicted, to bound memory growth.
 const MAX_SEEN_EVENTS: usize = 1000;
 /// Timeout for the best-effort author-name lookup in JSON mode. Kept short (unlike the
@@ -59,6 +64,107 @@ impl EventDeduplicator {
         self.order.push_back(event.id);
         true
     }
+}
+
+/// A `CLOSED` from a relay: that subscription is gone and nostr-sdk 0.41 will not
+/// re-REQ while the WebSocket stays up. The watch loop must call [`subscribe_watch`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClosedResubscribe {
+    relay_url: String,
+    subscription_id: String,
+    reason: String,
+}
+
+/// If this notification is a `CLOSED`, return the details so the caller re-issues REQ.
+fn closed_resubscribe(notification: &RelayPoolNotification) -> Option<ClosedResubscribe> {
+    match notification {
+        RelayPoolNotification::Message {
+            relay_url,
+            message:
+                RelayMessage::Closed {
+                    subscription_id,
+                    message,
+                },
+        } => Some(ClosedResubscribe {
+            relay_url: relay_url.to_string(),
+            subscription_id: subscription_id.to_string(),
+            reason: message.to_string(),
+        }),
+        _ => None,
+    }
+}
+
+/// One relay that has not delivered an EVENT for `timeout`. At most one: the caller
+/// disconnects/connects that relay only, then re-REQs.
+fn first_silent_relay(
+    last_event: &HashMap<RelayUrl, Instant>,
+    now: Instant,
+    timeout: Duration,
+) -> Option<RelayUrl> {
+    last_event
+        .iter()
+        .filter(|(_, last)| now.saturating_duration_since(**last) >= timeout)
+        .min_by_key(|(url, last)| (*last, url.to_string()))
+        .map(|(url, _)| url.clone())
+}
+
+fn next_silence_wait(
+    last_event: &HashMap<RelayUrl, Instant>,
+    now: Instant,
+    timeout: Duration,
+) -> Duration {
+    last_event
+        .values()
+        .map(|last| timeout.saturating_sub(now.saturating_duration_since(*last)))
+        .min()
+        .unwrap_or(timeout)
+}
+
+enum WatchWake {
+    Notification(Box<RelayPoolNotification>),
+    SilentRelay(RelayUrl),
+}
+
+async fn recv_watch_wake(
+    notifications: &mut tokio::sync::broadcast::Receiver<RelayPoolNotification>,
+    last_event: &HashMap<RelayUrl, Instant>,
+    silence_timeout: Duration,
+) -> Result<WatchWake> {
+    loop {
+        let wait = next_silence_wait(last_event, Instant::now(), silence_timeout);
+        tokio::select! {
+            recv = notifications.recv() => {
+                match recv {
+                    Ok(notification) => {
+                        return Ok(WatchWake::Notification(Box::new(notification)));
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                        eprintln!("watch: notification lagged, skipped {skipped}");
+                    }
+                    Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                        bail!("watch: notification channel closed");
+                    }
+                }
+            }
+            _ = tokio::time::sleep(wait) => {
+                if let Some(url) =
+                    first_silent_relay(last_event, Instant::now(), silence_timeout)
+                {
+                    return Ok(WatchWake::SilentRelay(url));
+                }
+            }
+        }
+    }
+}
+
+async fn seed_last_event(client: &Client) -> HashMap<RelayUrl, Instant> {
+    let now = Instant::now();
+    client
+        .relays()
+        .await
+        .into_keys()
+        .map(|url| (url, now))
+        .collect()
 }
 
 /// True if `event` carries a `p` tag pointing at `pubkey`, i.e. the event mentions or
@@ -436,6 +542,7 @@ pub async fn run(
     json_output: bool,
     match_mode: MatchMode,
     only_follows: bool,
+    silence_timeout: Duration,
 ) -> Result<()> {
     if !json_output && webhook_url.is_none() {
         bail!("--webhook is required unless --json is specified");
@@ -526,7 +633,13 @@ pub async fn run(
     }
 
     if json_output {
-        return watch_json(&nostr_client, &mut watch_filter, own_pubkey).await;
+        return watch_json(
+            &nostr_client,
+            &mut watch_filter,
+            own_pubkey,
+            silence_timeout,
+        )
+        .await;
     }
     let webhook_url = webhook_url.expect("checked above");
 
@@ -537,6 +650,8 @@ pub async fn run(
 
     println!("Webhook: {}", webhook_url);
 
+    let mut channel_sub_id: Option<SubscriptionId> = None;
+    let mut channel_event_id_held: Option<EventId> = None;
     if let Some(ref ch_id) = watching_channel {
         println!(
             "Watching NIP-28 channel: {}...",
@@ -549,7 +664,9 @@ pub async fn run(
             .event(channel_event_id)
             .since(Timestamp::now());
 
-        nostr_client.subscribe(filter, None).await?;
+        let output = nostr_client.subscribe(filter, None).await?;
+        channel_sub_id = Some(output.val);
+        channel_event_id_held = Some(channel_event_id);
     }
 
     // Follow-narrowed subscriptions are tracked by id so `--only-follows` can replace them
@@ -565,9 +682,58 @@ pub async fn run(
     let http_client = reqwest::Client::new();
     let mut dedup = EventDeduplicator::new();
 
+    let mut last_event = seed_last_event(&nostr_client).await;
     let mut notifications = nostr_client.notifications();
-    while let Ok(notification) = notifications.recv().await {
-        if let RelayPoolNotification::Event { event, .. } = notification {
+    loop {
+        match recv_watch_wake(&mut notifications, &last_event, silence_timeout).await? {
+            WatchWake::SilentRelay(url) => {
+                eprintln!(
+                    "watchdog: silent {} min on {}, resubscribing",
+                    silence_timeout.as_secs() / 60,
+                    url
+                );
+                reconnect_silent_relay(&nostr_client, &url).await?;
+                last_event.insert(url, Instant::now());
+                resubscribe_watch_session(
+                    &nostr_client,
+                    &mut WatchResubscribe {
+                        filter: &watch_filter,
+                        active_ids: &mut active_ids,
+                        general_watch,
+                        channel_event_id: channel_event_id_held,
+                        channel_sub_id: &mut channel_sub_id,
+                        only_follows: watch_filter.only_follows,
+                        own_pubkey,
+                    },
+                )
+                .await?;
+                continue;
+            }
+            WatchWake::Notification(notification) => {
+                if handle_watch_control(
+                    &nostr_client,
+                    &notification,
+                    &mut WatchResubscribe {
+                        filter: &watch_filter,
+                        active_ids: &mut active_ids,
+                        general_watch,
+                        channel_event_id: channel_event_id_held,
+                        channel_sub_id: &mut channel_sub_id,
+                        only_follows: watch_filter.only_follows,
+                        own_pubkey,
+                    },
+                )
+                .await?
+                {
+                    continue;
+                }
+                let RelayPoolNotification::Event {
+                    event, relay_url, ..
+                } = *notification
+                else {
+                    continue;
+                };
+                last_event.insert(relay_url, Instant::now());
             if !dedup.accept(&event) {
                 continue;
             }
@@ -799,10 +965,9 @@ pub async fn run(
             {
                 eprintln!("Webhook error: {}", e);
             }
+            }
         }
     }
-
-    Ok(())
 }
 
 /// Fixed id for the kind:3 replacement subscription, so `--only-follows` keeps exactly one
@@ -853,6 +1018,104 @@ async fn subscribe_watch(
     Ok(ids)
 }
 
+struct WatchResubscribe<'a> {
+    filter: &'a WatchFilter,
+    active_ids: &'a mut Vec<SubscriptionId>,
+    general_watch: bool,
+    channel_event_id: Option<EventId>,
+    channel_sub_id: &'a mut Option<SubscriptionId>,
+    only_follows: bool,
+    own_pubkey: PublicKey,
+}
+
+async fn replace_watch_subscriptions(
+    client: &Client,
+    filter: &WatchFilter,
+    active_ids: &mut Vec<SubscriptionId>,
+) -> Result<()> {
+    for id in active_ids.drain(..) {
+        client.unsubscribe(&id).await;
+    }
+    let new_ids = subscribe_watch(client, filter, Timestamp::now()).await?;
+    active_ids.extend(new_ids);
+    Ok(())
+}
+
+async fn resubscribe_watch_session(
+    client: &Client,
+    session: &mut WatchResubscribe<'_>,
+) -> Result<()> {
+    if session.general_watch {
+        replace_watch_subscriptions(client, session.filter, session.active_ids).await?;
+    }
+    if let Some(ch_id) = session.channel_event_id {
+        if let Some(id) = session.channel_sub_id.take() {
+            client.unsubscribe(&id).await;
+        }
+        let output = client
+            .subscribe(
+                Filter::new()
+                    .kind(Kind::ChannelMessage)
+                    .event(ch_id)
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+        *session.channel_sub_id = Some(output.val);
+    }
+    if session.only_follows {
+        client
+            .subscribe_with_id(
+                follows_update_subscription_id(),
+                Filter::new()
+                    .kind(Kind::ContactList)
+                    .author(session.own_pubkey)
+                    .since(Timestamp::now()),
+                None,
+            )
+            .await?;
+    }
+    Ok(())
+}
+
+async fn reconnect_silent_relay(client: &Client, url: &RelayUrl) -> Result<()> {
+    client.disconnect_relay(url).await?;
+    client.connect_relay(url).await?;
+    Ok(())
+}
+
+/// Handle CLOSED / NOTICE / Shutdown. Returns true when the notification is consumed
+/// (not an Event the caller should process).
+async fn handle_watch_control(
+    client: &Client,
+    notification: &RelayPoolNotification,
+    session: &mut WatchResubscribe<'_>,
+) -> Result<bool> {
+    if let Some(closed) = closed_resubscribe(notification) {
+        eprintln!(
+            "CLOSED from {}: id={} reason={}",
+            closed.relay_url, closed.subscription_id, closed.reason
+        );
+        resubscribe_watch_session(client, session).await?;
+        return Ok(true);
+    }
+    match notification {
+        RelayPoolNotification::Message {
+            message: RelayMessage::Notice(msg),
+            relay_url,
+        } => {
+            eprintln!("NOTICE from {}: {}", relay_url, msg);
+            Ok(true)
+        }
+        RelayPoolNotification::Shutdown => {
+            eprintln!("watch: relay pool shutdown");
+            bail!("relay pool shutdown");
+        }
+        RelayPoolNotification::Event { .. } => Ok(false),
+        _ => Ok(true),
+    }
+}
+
 /// If `event` is a replacement of our own follow list under `--only-follows`, refresh the
 /// allowed-author set and re-issue the follow-narrowed subscriptions, then report `true` so
 /// the caller drops the event (it is not a watched notification). Everything else returns
@@ -890,11 +1153,7 @@ async fn maybe_apply_follow_update(
     let follows = contacts_from_event(event);
     filter.apply_follow_list(event);
 
-    for id in active_ids.drain(..) {
-        client.unsubscribe(&id).await;
-    }
-    let new_ids = subscribe_watch(client, filter, Timestamp::now()).await?;
-    active_ids.extend(new_ids);
+    replace_watch_subscriptions(client, filter, active_ids).await?;
 
     if follows.is_empty() {
         eprintln!(
@@ -983,6 +1242,7 @@ async fn watch_json(
     nostr_client: &Client,
     watch_filter: &mut WatchFilter,
     own_pubkey: PublicKey,
+    silence_timeout: Duration,
 ) -> Result<()> {
     eprintln!("Watching (JSON mode)");
     for line in filter_description(watch_filter)? {
@@ -991,13 +1251,62 @@ async fn watch_json(
     eprintln!("Press Ctrl+C to stop.\n");
 
     let mut active_ids = subscribe_watch(nostr_client, watch_filter, Timestamp::now()).await?;
+    let mut channel_sub_id = None;
 
     let mut dedup = EventDeduplicator::new();
     let mut author_name_cache: HashMap<PublicKey, Option<String>> = HashMap::new();
 
+    let mut last_event = seed_last_event(nostr_client).await;
     let mut notifications = nostr_client.notifications();
-    while let Ok(notification) = notifications.recv().await {
-        if let RelayPoolNotification::Event { event, .. } = notification {
+    loop {
+        match recv_watch_wake(&mut notifications, &last_event, silence_timeout).await? {
+            WatchWake::SilentRelay(url) => {
+                eprintln!(
+                    "watchdog: silent {} min on {}, resubscribing",
+                    silence_timeout.as_secs() / 60,
+                    url
+                );
+                reconnect_silent_relay(nostr_client, &url).await?;
+                last_event.insert(url, Instant::now());
+                resubscribe_watch_session(
+                    nostr_client,
+                    &mut WatchResubscribe {
+                        filter: watch_filter,
+                        active_ids: &mut active_ids,
+                        general_watch: true,
+                        channel_event_id: None,
+                        channel_sub_id: &mut channel_sub_id,
+                        only_follows: watch_filter.only_follows,
+                        own_pubkey,
+                    },
+                )
+                .await?;
+            }
+            WatchWake::Notification(notification) => {
+                if handle_watch_control(
+                    nostr_client,
+                    &notification,
+                    &mut WatchResubscribe {
+                        filter: watch_filter,
+                        active_ids: &mut active_ids,
+                        general_watch: true,
+                        channel_event_id: None,
+                        channel_sub_id: &mut channel_sub_id,
+                        only_follows: watch_filter.only_follows,
+                        own_pubkey,
+                    },
+                )
+                .await?
+                {
+                    continue;
+                }
+                let RelayPoolNotification::Event {
+                    event, relay_url, ..
+                } = *notification
+                else {
+                    continue;
+                };
+                last_event.insert(relay_url, Instant::now());
             if !dedup.accept(&event) {
                 continue;
             }
@@ -1022,10 +1331,9 @@ async fn watch_json(
                 Ok(line) => println!("{}", line),
                 Err(e) => eprintln!("Failed to serialize event {}: {}", event.id, e),
             }
+            }
         }
     }
-
-    Ok(())
 }
 
 async fn build_json_event(
@@ -1999,5 +2307,91 @@ mod tests {
         ));
         // The follow set is unchanged because the stale list is never applied.
         assert_eq!(filter.authors, vec![new_friend]);
+    }
+
+    // --- CLOSED → re-REQ -------------------------------------------------------
+
+    fn example_relay() -> RelayUrl {
+        RelayUrl::parse("wss://relay.example").expect("url")
+    }
+
+    fn closed_notification(id: &str, reason: &str) -> RelayPoolNotification {
+        RelayPoolNotification::Message {
+            relay_url: example_relay(),
+            message: RelayMessage::closed(SubscriptionId::new(id), reason),
+        }
+    }
+
+    #[test]
+    fn closed_requires_subscribe_to_be_called_again() {
+        // The helper is the unit-testable seam: a CLOSED is the only Message that
+        // must re-issue REQ via subscribe_watch. SDK 0.41 will not do this itself
+        // while the WebSocket stays up.
+        let closed = closed_notification("sub1", "rate-limited: too many");
+        let target = closed_resubscribe(&closed).expect("CLOSED must request resubscribe");
+        assert_eq!(target.relay_url, example_relay().to_string());
+        assert_eq!(target.subscription_id, SubscriptionId::new("sub1").to_string());
+        assert_eq!(target.reason, "rate-limited: too many");
+        assert!(
+            closed_resubscribe(&closed).is_some(),
+            "the watch loop must call subscribe_watch after this"
+        );
+    }
+
+    #[test]
+    fn notice_and_shutdown_do_not_resubscribe() {
+        let notice = RelayPoolNotification::Message {
+            relay_url: example_relay(),
+            message: RelayMessage::notice("slow down"),
+        };
+        assert!(closed_resubscribe(&notice).is_none());
+        assert!(closed_resubscribe(&RelayPoolNotification::Shutdown).is_none());
+    }
+
+    #[test]
+    fn event_notification_does_not_look_like_closed() {
+        let ev = note("hi", vec![]);
+        let notification = RelayPoolNotification::Event {
+            relay_url: example_relay(),
+            subscription_id: SubscriptionId::new("sub1"),
+            event: Box::new(ev),
+        };
+        assert!(closed_resubscribe(&notification).is_none());
+    }
+
+    #[test]
+    fn silent_relay_picks_only_the_quiet_one() {
+        let a = RelayUrl::parse("wss://a.example").unwrap();
+        let b = RelayUrl::parse("wss://b.example").unwrap();
+        let now = Instant::now();
+        let mut last_event = HashMap::new();
+        last_event.insert(a.clone(), now - DEFAULT_SILENCE_TIMEOUT - Duration::from_secs(1));
+        last_event.insert(b.clone(), now);
+        assert_eq!(
+            first_silent_relay(&last_event, now, DEFAULT_SILENCE_TIMEOUT),
+            Some(a)
+        );
+        last_event.insert(
+            RelayUrl::parse("wss://a.example").unwrap(),
+            now,
+        );
+        assert_eq!(
+            first_silent_relay(&last_event, now, DEFAULT_SILENCE_TIMEOUT),
+            None
+        );
+    }
+
+    #[test]
+    fn next_silence_wait_is_the_earliest_deadline() {
+        let a = RelayUrl::parse("wss://a.example").unwrap();
+        let now = Instant::now();
+        let mut last_event = HashMap::new();
+        last_event.insert(a, now - Duration::from_secs(10 * 60));
+        let wait = next_silence_wait(&last_event, now, DEFAULT_SILENCE_TIMEOUT);
+        assert_eq!(wait, Duration::from_secs(5 * 60));
+        assert_eq!(
+            next_silence_wait(&HashMap::new(), now, DEFAULT_SILENCE_TIMEOUT),
+            DEFAULT_SILENCE_TIMEOUT
+        );
     }
 }
