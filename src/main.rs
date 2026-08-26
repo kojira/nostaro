@@ -207,6 +207,14 @@ enum Commands {
         /// can never reach you. Combines with --author (union) and --match.
         #[arg(long)]
         only_follows: bool,
+        /// Minutes of EVENT silence on one relay before disconnect/connect + re-REQ
+        /// (default: 15)
+        #[arg(
+            long,
+            default_value_t = commands::watch::DEFAULT_SILENCE_TIMEOUT_MINS,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        silence_timeout: u64,
     },
 
     /// Post a custom kind Nostr event
@@ -556,6 +564,7 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
             relays,
             json,
             only_follows,
+            silence_timeout,
         } => {
             commands::watch::run(
                 webhook.as_deref(),
@@ -569,6 +578,7 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
                 json,
                 match_mode,
                 only_follows,
+                std::time::Duration::from_secs(silence_timeout.saturating_mul(60)),
             )
             .await?
         }
@@ -695,6 +705,35 @@ mod tests {
         let cli = Cli::try_parse_from(["nostaro", "watch", "--json", "--match", "all"]).unwrap();
         if let Commands::Watch { match_mode, .. } = cli.command {
             assert_eq!(match_mode, commands::watch::MatchMode::All);
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_silence_timeout_defaults_to_15_minutes() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from(["nostaro", "watch", "--json"]).unwrap();
+        if let Commands::Watch { silence_timeout, .. } = cli.command {
+            assert_eq!(silence_timeout, commands::watch::DEFAULT_SILENCE_TIMEOUT_MINS);
+        } else {
+            panic!("wrong command");
+        }
+    }
+
+    #[test]
+    fn test_silence_timeout_is_accepted() {
+        use clap::Parser;
+        let cli = Cli::try_parse_from([
+            "nostaro",
+            "watch",
+            "--json",
+            "--silence-timeout",
+            "30",
+        ])
+        .unwrap();
+        if let Commands::Watch { silence_timeout, .. } = cli.command {
+            assert_eq!(silence_timeout, 30);
         } else {
             panic!("wrong command");
         }
