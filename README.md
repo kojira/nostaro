@@ -313,6 +313,7 @@ nostaro watch --json --keyword nostr
 - Reaction notifications include the original post as a quote
 - Uses kind:0 profile metadata (icon, display name) for webhook avatar
 - Runs continuously — ideal for background monitoring
+- On relay `CLOSED`, re-issues REQ (`since=now`). A relay silent for 15 minutes (`--silence-timeout`) is disconnected/reconnected and re-subscribed. Diagnostics go to stderr; JSONL schema is unchanged.
 
 > **Upgrading from an earlier version — six behaviour changes:**
 >
