@@ -2,10 +2,11 @@ use anyhow::Result;
 use nostr_sdk::prelude::*;
 
 use crate::client;
+use crate::commands::emit;
 use crate::config::NostaroConfig;
 use crate::keys;
 
-pub async fn run(message: &str, quote: Option<&str>) -> Result<()> {
+pub async fn run(message: &str, quote: Option<&str>, json: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
@@ -38,16 +39,20 @@ pub async fn run(message: &str, quote: Option<&str>) -> Result<()> {
         content.push_str(&format!("\n\nnostr:{}", quote_str));
     }
 
-    println!("Publishing note...");
-    if extra_tags.is_empty() {
-        client::post_note(&nostr_client, &content).await?;
+    emit::status(json, "Publishing note...");
+    let event_id = if extra_tags.is_empty() {
+        client::post_note(&nostr_client, &content).await?
     } else {
         // Build event with extra tags
         let builder = EventBuilder::text_note(&content).tags(extra_tags);
         let output = client::publish(&nostr_client, builder).await?;
-        println!("Event ID: {}", output.id().to_bech32()?);
-    }
-    println!("Note published successfully!");
+        // Pre-existing bech32 line, kept unchanged for backward compatibility.
+        emit::status(json, &format!("Event ID: {}", output.id().to_bech32()?));
+        *output.id()
+    };
+    emit::status(json, "Note published successfully!");
+    // Issue #18: additive machine-readable id (text `Event id:` line or JSON).
+    emit::emit_event_id(json, &event_id);
 
     nostr_client.disconnect().await;
     Ok(())

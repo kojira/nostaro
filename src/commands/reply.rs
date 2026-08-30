@@ -2,10 +2,11 @@ use anyhow::{anyhow, Result};
 use nostr_sdk::prelude::*;
 
 use crate::client;
+use crate::commands::emit;
 use crate::config::NostaroConfig;
 use crate::keys;
 
-pub async fn run(note_id: &str, message: &str) -> Result<()> {
+pub async fn run(note_id: &str, message: &str, json: bool) -> Result<()> {
     let config = NostaroConfig::load()?;
     let keys = keys::keys_from_config(&config)?;
     let nostr_client = client::create_client(&keys, &config).await?;
@@ -16,9 +17,11 @@ pub async fn run(note_id: &str, message: &str) -> Result<()> {
         .await?
         .ok_or_else(|| anyhow!("Event not found: {}", note_id))?;
 
-    println!("Replying to {}...", &event_id.to_hex()[..8]);
-    client::reply_note(&nostr_client, &target_event, message).await?;
-    println!("Reply published successfully!");
+    emit::status(json, &format!("Replying to {}...", &event_id.to_hex()[..8]));
+    let published_id = client::reply_note(&nostr_client, &target_event, message).await?;
+    emit::status(json, "Reply published successfully!");
+    // Issue #18: additive machine-readable id (text `Event id:` line or JSON).
+    emit::emit_event_id(json, &published_id);
 
     nostr_client.disconnect().await;
     Ok(())

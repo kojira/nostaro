@@ -2,6 +2,7 @@ pub mod cache;
 pub mod channel;
 pub mod decode;
 pub mod dm;
+pub mod emit;
 pub mod event;
 pub mod follow;
 pub mod get;

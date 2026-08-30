@@ -39,6 +39,10 @@ enum Commands {
         /// Quote repost: nevent1 or note1 to quote
         #[arg(long)]
         quote: Option<String>,
+        /// Print the published event id as a JSON line ({"event_id":"<hex>"}) on
+        /// stdout; status messages then go to stderr
+        #[arg(long)]
+        json: bool,
     },
 
     /// Reply to a note (kind:1 with e/p tags)
@@ -47,6 +51,10 @@ enum Commands {
         note_id: String,
         /// Reply message
         message: String,
+        /// Print the published event id as a JSON line ({"event_id":"<hex>"}) on
+        /// stdout; status messages then go to stderr
+        #[arg(long)]
+        json: bool,
     },
 
     /// Repost a note (kind:6)
@@ -442,10 +450,16 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
     match command {
         Commands::Init => commands::init::run().await?,
         Commands::Pubkey => commands::pubkey::run().await?,
-        Commands::Post { message, quote } => {
-            commands::post::run(&message, quote.as_deref()).await?
-        }
-        Commands::Reply { note_id, message } => commands::reply::run(&note_id, &message).await?,
+        Commands::Post {
+            message,
+            quote,
+            json,
+        } => commands::post::run(&message, quote.as_deref(), json).await?,
+        Commands::Reply {
+            note_id,
+            message,
+            json,
+        } => commands::reply::run(&note_id, &message, json).await?,
         Commands::Repost { note_id } => commands::repost::run(&note_id).await?,
         Commands::Timeline {
             limit,
@@ -876,6 +890,37 @@ mod tests {
             parse_error(&["nostaro", "following", "--out-format", "json"]).kind(),
             clap::error::ErrorKind::MissingRequiredArgument
         );
+    }
+
+    /// Issue #18: `post`/`reply` take an opt-in `--json` flag; it defaults off so
+    /// the existing text output is untouched.
+    #[test]
+    fn test_post_and_reply_accept_json_flag() {
+        use clap::Parser;
+
+        let cli = Cli::try_parse_from(["nostaro", "post", "hi", "--json"]).unwrap();
+        match cli.command {
+            Commands::Post { json, .. } => assert!(json, "--json must set the flag"),
+            _ => panic!("wrong command"),
+        }
+
+        let cli = Cli::try_parse_from(["nostaro", "reply", "note1abc", "hi", "--json"]).unwrap();
+        match cli.command {
+            Commands::Reply { json, .. } => assert!(json, "--json must set the flag"),
+            _ => panic!("wrong command"),
+        }
+
+        // Default off: the flag is opt-in, so plain `post`/`reply` are unchanged.
+        let cli = Cli::try_parse_from(["nostaro", "post", "hi"]).unwrap();
+        match cli.command {
+            Commands::Post { json, .. } => assert!(!json, "--json defaults off"),
+            _ => panic!("wrong command"),
+        }
+        let cli = Cli::try_parse_from(["nostaro", "reply", "note1abc", "hi"]).unwrap();
+        match cli.command {
+            Commands::Reply { json, .. } => assert!(!json, "--json defaults off"),
+            _ => panic!("wrong command"),
+        }
     }
 
     #[test]

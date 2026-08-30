@@ -62,21 +62,27 @@ pub async fn publish(client: &Client, builder: EventBuilder) -> Result<Output<Ev
     Ok(output)
 }
 
-pub async fn post_note(client: &Client, content: &str) -> Result<()> {
+/// Publish a text note and return the id of the event that was published.
+///
+/// Returns the id (rather than `()`) so callers can report it — issue #18: a
+/// consumer such as OpenCrab's nostr-gateway needs the id of its own note.
+pub async fn post_note(client: &Client, content: &str) -> Result<EventId> {
     let builder = EventBuilder::text_note(content);
-    publish(client, builder).await?;
-    Ok(())
+    let output = publish(client, builder).await?;
+    Ok(*output.id())
 }
 
-pub async fn reply_note(client: &Client, reply_to: &Event, content: &str) -> Result<()> {
+/// Publish a reply (kind:1 with e/p tags) and return the id of the new event.
+/// See [`post_note`] for why the id is returned.
+pub async fn reply_note(client: &Client, reply_to: &Event, content: &str) -> Result<EventId> {
     let reply_id_hex = reply_to.id.to_hex();
     let tags = vec![
         Tag::parse(["e", &reply_id_hex, "", "reply"])?,
         Tag::public_key(reply_to.pubkey),
     ];
     let builder = EventBuilder::text_note(content).tags(tags);
-    publish(client, builder).await?;
-    Ok(())
+    let output = publish(client, builder).await?;
+    Ok(*output.id())
 }
 
 pub async fn repost_event(client: &Client, event: &Event) -> Result<()> {
