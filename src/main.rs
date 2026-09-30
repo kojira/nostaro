@@ -39,6 +39,9 @@ enum Commands {
         /// Quote repost: nevent1 or note1 to quote
         #[arg(long)]
         quote: Option<String>,
+        /// Mention a user (hex or npub1): adds a p tag and prefixes nostr:npub1… to the note
+        #[arg(long)]
+        mention: Option<String>,
         /// Print the published event id as a JSON line ({"event_id":"<hex>"}) on
         /// stdout; status messages then go to stderr
         #[arg(long)]
@@ -453,8 +456,9 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
         Commands::Post {
             message,
             quote,
+            mention,
             json,
-        } => commands::post::run(&message, quote.as_deref(), json).await?,
+        } => commands::post::run(&message, quote.as_deref(), mention.as_deref(), json).await?,
         Commands::Reply {
             note_id,
             message,
