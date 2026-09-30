@@ -39,6 +39,9 @@ enum Commands {
         /// Quote repost: nevent1 or note1 to quote
         #[arg(long)]
         quote: Option<String>,
+        /// Mention a user (hex or npub1): adds a p tag and prefixes nostr:npub1… to the note
+        #[arg(long)]
+        mention: Option<String>,
     },
 
     /// Reply to a note (kind:1 with e/p tags)
@@ -450,9 +453,11 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
     match command {
         Commands::Init => commands::init::run().await?,
         Commands::Pubkey => commands::pubkey::run().await?,
-        Commands::Post { message, quote } => {
-            commands::post::run(&message, quote.as_deref()).await?
-        }
+        Commands::Post {
+            message,
+            quote,
+            mention,
+        } => commands::post::run(&message, quote.as_deref(), mention.as_deref()).await?,
         Commands::Reply { note_id, message } => commands::reply::run(&note_id, &message).await?,
         Commands::Repost { note_id } => commands::repost::run(&note_id).await?,
         Commands::Timeline {
