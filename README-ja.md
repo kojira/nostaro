@@ -187,6 +187,13 @@ nostaro profile set --name "nostaro" --about "Nostr bot"
 nostaro follow npub1...
 nostaro unfollow npub1...
 
+# 保存した一覧をまとめてフォロー（件数によらず kind:3 は 1 回だけ発行）
+nostaro following --out following.json --out-format json
+nostaro follow --from-file following.json            # 一覧を追加フォロー
+nostaro follow --from-file following.json --replace  # 一覧をそのままフォローリストにする
+nostaro unfollow --from-file following.json          # 一覧の分だけ解除
+nostaro unfollow --from-file following.json --all    # 全員解除
+
 # フォロー中リスト
 nostaro following
 
@@ -194,6 +201,13 @@ nostaro following
 nostaro followers
 nostaro followers npub1...
 ```
+
+`--from-file` は `following --out` が書くファイルをそのまま受け取ります（上の JSON、
+npub/hex の JSON 配列、1 行 1 npub のテキスト）。件数によらず kind:3 は **1 回**だけ
+発行し、リストが変わらないときは **何も発行しません**（同じファイルを 2 回適用しても
+無料）。全エントリはリレーを読む前・発行する前に検証するので、不正なエントリがあれば
+その位置と値を示して失敗し、中途半端なリストを発行することはありません。
+`follow <npub>` を件数分ループすると 1 件ごとに kind:3 を発行してしまいます。
 
 `following` / `followers` が返すのは **npub だけ**で、表示名は出しません。
 一覧そのものは kind:3 を 1 回読めば終わりますが、名前を付けるには 1 件ごとに

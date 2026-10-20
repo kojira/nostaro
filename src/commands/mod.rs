@@ -1,5 +1,6 @@
 pub mod cache;
 pub mod channel;
+pub mod contact_list;
 pub mod decode;
 pub mod dm;
 pub mod emit;

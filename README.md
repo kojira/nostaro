@@ -192,6 +192,13 @@ nostaro profile set --name "nostaro" --about "Nostr bot"
 nostaro follow npub1...
 nostaro unfollow npub1...
 
+# Follow a whole saved listing (one kind:3 event, whatever the list size)
+nostaro following --out following.json --out-format json
+nostaro follow --from-file following.json            # add the file's set
+nostaro follow --from-file following.json --replace  # make it the whole follow list
+nostaro unfollow --from-file following.json          # remove the file's set
+nostaro unfollow --from-file following.json --all    # unfollow everyone
+
 # List following
 nostaro following
 
@@ -199,6 +206,14 @@ nostaro following
 nostaro followers
 nostaro followers npub1...
 ```
+
+`--from-file` accepts what `following --out` writes: the JSON document above, a
+bare JSON array of npub/hex, or the plain text listing (one npub per line). It
+publishes **one** kind:3 event for the whole set and publishes **nothing** when
+the list would not change, so applying the same file twice is free. Every entry
+is validated before anything is read from a relay or published: a bad entry
+fails with its index and value, and no partial list is ever published. Looping
+`follow <npub>` over a file would instead publish one kind:3 per entry.
 
 `following` / `followers` list **npubs only** — no display names. The list
 itself is a single kind:3 read; attaching a name would mean one extra kind:0
