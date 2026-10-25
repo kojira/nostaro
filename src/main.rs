@@ -92,16 +92,46 @@ enum Commands {
         action: ProfileAction,
     },
 
-    /// Follow a user (kind:3)
+    /// Follow a user (kind:3), or every user in a saved listing file
     Follow {
         /// Public key (npub or hex) to follow
-        npub: String,
+        npub: Option<String>,
+        /// Follow every pubkey in a listing file saved by `following --out`
+        /// ({"count","users"} JSON, a JSON array, or one npub/hex per line).
+        /// The whole set is published as one kind:3 event
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with = "npub",
+            required_unless_present = "npub"
+        )]
+        from_file: Option<PathBuf>,
+        /// With --from-file: publish exactly the file's set, dropping everyone who is
+        /// not in it (default: add the file's set to the current follows)
+        #[arg(long, requires = "from_file")]
+        replace: bool,
     },
 
-    /// Unfollow a user (kind:3)
+    /// Unfollow a user (kind:3), or every user in a saved listing file
     Unfollow {
         /// Public key (npub or hex) to unfollow
-        npub: String,
+        npub: Option<String>,
+        /// Unfollow every pubkey in a listing file saved by `following --out`
+        /// ({"count","users"} JSON, a JSON array, or one npub/hex per line).
+        /// The whole set is published as one kind:3 event
+        #[arg(
+            long,
+            value_name = "FILE",
+            conflicts_with = "npub",
+            required_unless_present = "npub"
+        )]
+        from_file: Option<PathBuf>,
+        /// With --from-file: remove exactly the file's set (the default)
+        #[arg(long, requires = "from_file", conflicts_with = "all")]
+        only: bool,
+        /// With --from-file: unfollow everyone (publishes an empty kind:3 list)
+        #[arg(long, requires = "from_file", conflicts_with = "only")]
+        all: bool,
     },
 
     /// List users you're following
@@ -503,8 +533,25 @@ async fn dispatch(command: Commands) -> anyhow::Result<()> {
                 .await?
             }
         },
-        Commands::Follow { npub } => commands::follow::follow(&npub).await?,
-        Commands::Unfollow { npub } => commands::follow::unfollow(&npub).await?,
+        Commands::Follow {
+            npub,
+            from_file,
+            replace,
+        } => match (npub, from_file) {
+            (_, Some(path)) => commands::follow::follow_from_file(&path, replace).await?,
+            (Some(npub), None) => commands::follow::follow(&npub).await?,
+            (None, None) => anyhow::bail!("follow needs a pubkey or --from-file"),
+        },
+        Commands::Unfollow {
+            npub,
+            from_file,
+            all,
+            ..
+        } => match (npub, from_file) {
+            (_, Some(path)) => commands::follow::unfollow_from_file(&path, all).await?,
+            (Some(npub), None) => commands::follow::unfollow(&npub).await?,
+            (None, None) => anyhow::bail!("unfollow needs a pubkey or --from-file"),
+        },
         Commands::Following { npub } => commands::follow::following(npub.as_deref()).await?,
         Commands::Followers { npub } => commands::follow::followers(npub.as_deref()).await?,
         Commands::React { note_id, emoji } => commands::react::run(&note_id, &emoji).await?,

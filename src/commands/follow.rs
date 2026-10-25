@@ -1,7 +1,9 @@
 use anyhow::Result;
 use nostr_sdk::prelude::*;
+use std::path::Path;
 
 use crate::client;
+use crate::commands::contact_list::{self, ContactListPlan, ListMode};
 use crate::config::NostaroConfig;
 use crate::keys;
 use crate::outln;
@@ -96,6 +98,108 @@ pub async fn follow(pubkey_str: &str) -> Result<()> {
 
     nostr_client.disconnect().await;
     Ok(())
+}
+
+/// `follow --from-file`: add the file's set to the follow list (default) or replace the
+/// list with it, as one kind:3 publish.
+///
+/// The file is parsed before a client is created: a bad entry fails the command with
+/// nothing published, never with a partial list.
+pub async fn follow_from_file(path: &Path, replace: bool) -> Result<()> {
+    let wanted = contact_list::read_listing(path)?;
+    let mode = if replace {
+        ListMode::Replace
+    } else {
+        ListMode::Add
+    };
+    apply_listing(path, &wanted, mode).await
+}
+
+/// `unfollow --from-file`: remove the file's set (default) or everyone (`all`), as one
+/// kind:3 publish.
+pub async fn unfollow_from_file(path: &Path, all: bool) -> Result<()> {
+    let wanted = contact_list::read_listing(path)?;
+    let mode = if all {
+        ListMode::RemoveAll
+    } else {
+        ListMode::Remove
+    };
+    apply_listing(path, &wanted, mode).await
+}
+
+/// One contact list read, one publish, and a summary of what changed.
+async fn apply_listing(path: &Path, wanted: &[PublicKey], mode: ListMode) -> Result<()> {
+    let config = NostaroConfig::load()?;
+    let keys = keys::keys_from_config(&config)?;
+    let nostr_client = client::create_client(&keys, &config).await?;
+
+    let current = client::fetch_contacts(&nostr_client, &keys.public_key()).await?;
+    let plan = contact_list::plan(&current, wanted, mode);
+
+    // The publish closure takes ownership of the contacts it publishes, and only a
+    // shared reference to the client (which stays usable for the disconnect below).
+    let conn = &nostr_client;
+    let published = contact_list::publish_plan(&plan, |contacts| async move {
+        client::publish_contact_list(conn, &contacts).await
+    })
+    .await?;
+
+    report_listing(path, mode, &plan, current.len(), published);
+    nostr_client.disconnect().await;
+    Ok(())
+}
+
+/// What the operator sees: what changed, what is followed now, and whether an event went
+/// out (one at most).
+fn report_listing(
+    path: &Path,
+    mode: ListMode,
+    plan: &ContactListPlan,
+    before: usize,
+    published: bool,
+) {
+    let file = path.display();
+    if !published {
+        match mode {
+            ListMode::Add => println!(
+                "Nothing to do: every user in {file} is already followed ({before} followed now); no kind:3 published."
+            ),
+            ListMode::Replace => println!(
+                "Nothing to do: the follow list already matches {file} ({before} user(s)); no kind:3 published."
+            ),
+            ListMode::Remove => println!(
+                "Nothing to do: none of the user(s) in {file} are followed; no kind:3 published."
+            ),
+            ListMode::RemoveAll => {
+                println!("Nothing to do: the follow list is already empty; no kind:3 published.")
+            }
+        }
+        return;
+    }
+
+    match mode {
+        ListMode::Add => println!(
+            "Added {} user(s) from {file}; now following {} (was {before}).",
+            plan.added.len(),
+            plan.contacts.len()
+        ),
+        ListMode::Replace => println!(
+            "Replaced the follow list from {file}: {} user(s), added {}, removed {} (was {before}).",
+            plan.contacts.len(),
+            plan.added.len(),
+            plan.removed.len()
+        ),
+        ListMode::Remove => println!(
+            "Unfollowed {} user(s) from {file}; now following {} (was {before}).",
+            plan.removed.len(),
+            plan.contacts.len()
+        ),
+        ListMode::RemoveAll => println!(
+            "Unfollowed all {} user(s); the follow list is now empty.",
+            plan.removed.len()
+        ),
+    }
+    println!("Published 1 kind:3 event.");
 }
 
 pub async fn unfollow(pubkey_str: &str) -> Result<()> {
