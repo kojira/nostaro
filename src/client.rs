@@ -72,14 +72,10 @@ pub async fn post_note(client: &Client, content: &str) -> Result<EventId> {
     Ok(*output.id())
 }
 
-/// Publish a reply (kind:1 with e/p tags) and return the id of the new event.
-/// See [`post_note`] for why the id is returned.
+/// Publish a reply (kind:1 with NIP-10 e/p tags, see [`crate::reply_tags`]) and return the
+/// id of the new event. See [`post_note`] for why the id is returned.
 pub async fn reply_note(client: &Client, reply_to: &Event, content: &str) -> Result<EventId> {
-    let reply_id_hex = reply_to.id.to_hex();
-    let tags = vec![
-        Tag::parse(["e", &reply_id_hex, "", "reply"])?,
-        Tag::public_key(reply_to.pubkey),
-    ];
+    let tags = crate::reply_tags::reply_tags(reply_to)?;
     let builder = EventBuilder::text_note(content).tags(tags);
     let output = publish(client, builder).await?;
     Ok(*output.id())
